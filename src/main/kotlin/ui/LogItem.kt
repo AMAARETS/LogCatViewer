@@ -24,70 +24,42 @@ fun LogItemWithSelection(
     isSelected: Boolean,
     isDragging: Boolean,
     onSelectionStart: (isCtrlPressed: Boolean) -> Unit,
-    onHover: (isHovering: Boolean) -> Unit,
-    onDragEnd: () -> Unit,
-    onContextMenu: (DpOffset) -> Unit
+    onDragHover: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onDragEnd: () -> Unit,
+    @Suppress("UNUSED_PARAMETER") onContextMenu: (DpOffset) -> Unit
 ) {
-    // Memoize colors and modifiers to avoid recreating them
-    val backgroundColor = remember { Color(0xFF252525) }
-    val selectedColor = remember { Color(0xFF1E3A5F) }
-    val hoverColor = remember { Color(0xFF2D2D2D) }
-    val messageColor = remember { Color(0xFFE0E0E0) }
-    val tagColor = remember { Color(0xFF64B5F6) }
-    val metaColor = remember { Color(0xFF888888) }
-    val shape = remember { RoundedCornerShape(2.dp) }
+    // Static colors - no need to remember
+    val backgroundColor = Color(0xFF252525)
+    val selectedColor = Color(0xFF1E3A5F)
+    val hoverColor = Color(0xFF2D2D2D)
+    val messageColor = Color(0xFFE0E0E0)
+    val tagColor = Color(0xFF64B5F6)
+    val metaColor = Color(0xFF888888)
+    val shape = RoundedCornerShape(2.dp)
     
     val pidTidText = remember(log.pid, log.tid) { "${log.pid}/${log.tid}" }
-    val fullLogText = remember(log) {
-        "${log.timestamp} ${log.pid}/${log.tid} ${log.level.displayName}/${log.tag}: ${log.message}"
-    }
     
     var isHovered by remember { mutableStateOf(false) }
     
-    val rowContent = @Composable {
-        LogItemRow(
-            log = log,
-            isSelected = isSelected,
-            isHovered = isHovered,
-            isDragging = isDragging,
-            backgroundColor = backgroundColor,
-            selectedColor = selectedColor,
-            hoverColor = hoverColor,
-            shape = shape,
-            metaColor = metaColor,
-            tagColor = tagColor,
-            messageColor = messageColor,
-            pidTidText = pidTidText,
-            fullLogText = fullLogText,
-            onHoverChange = { hovering ->
-                isHovered = hovering
-                onHover(hovering)
-            },
-            onSelectionStart = onSelectionStart,
-            onDragEnd = onDragEnd,
-            onContextMenu = onContextMenu
-        )
-    }
-    
-    // Only wrap non-selected items with ContextMenuArea
-    if (!isSelected) {
-        ContextMenuArea(
-            items = {
-                listOf(
-                    ContextMenuItem("העתק הודעה") {
-                        copyToClipboard(log.message)
-                    },
-                    ContextMenuItem("העתק שורה מלאה") {
-                        copyToClipboard(fullLogText)
-                    }
-                )
-            }
-        ) {
-            rowContent()
-        }
-    } else {
-        rowContent()
-    }
+    LogItemRow(
+        log = log,
+        isSelected = isSelected,
+        isHovered = isHovered,
+        isDragging = isDragging,
+        backgroundColor = backgroundColor,
+        selectedColor = selectedColor,
+        hoverColor = hoverColor,
+        shape = shape,
+        metaColor = metaColor,
+        tagColor = tagColor,
+        messageColor = messageColor,
+        pidTidText = pidTidText,
+        onHoverChange = { hovering ->
+            isHovered = hovering
+        },
+        onDragHover = onDragHover,
+        onSelectionStart = onSelectionStart
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
@@ -188,69 +160,57 @@ private fun LogItemRow(
     tagColor: Color,
     messageColor: Color,
     pidTidText: String,
-    fullLogText: String,
     onHoverChange: (Boolean) -> Unit,
-    onSelectionStart: (isCtrlPressed: Boolean) -> Unit,
-    onDragEnd: () -> Unit,
-    onContextMenu: (DpOffset) -> Unit
+    onDragHover: () -> Unit,
+    onSelectionStart: (isCtrlPressed: Boolean) -> Unit
 ) {
-    Box(
+    // Simplified - no Box wrapper
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 1.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    when {
-                        isSelected -> selectedColor
-                        isHovered -> hoverColor
-                        else -> backgroundColor
-                    },
-                    shape
-                )
-                // Combined pointer input for all interactions
-                .pointerInput(log.id) {
-                    awaitPointerEventScope {
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            when (event.type) {
-                                PointerEventType.Enter -> {
-                                    onHoverChange(true)
+            .background(
+                when {
+                    isSelected -> selectedColor
+                    isHovered -> hoverColor
+                    else -> backgroundColor
+                },
+                shape
+            )
+            // Optimized pointer input - only track essential events
+            .pointerInput(log.id) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        when (event.type) {
+                            PointerEventType.Enter -> {
+                                onHoverChange(true)
+                                if (isDragging) {
+                                    onDragHover()
                                 }
-                                PointerEventType.Exit -> {
-                                    onHoverChange(false)
+                            }
+                            PointerEventType.Exit -> {
+                                onHoverChange(false)
+                            }
+                            PointerEventType.Press -> {
+                                if (event.button == PointerButton.Primary) {
+                                    val isCtrlPressed = event.keyboardModifiers.isCtrlPressed
+                                    onSelectionStart(isCtrlPressed)
                                 }
-                                PointerEventType.Press -> {
-                                    if (event.button == PointerButton.Primary) {
-                                        val isCtrlPressed = event.keyboardModifiers.isCtrlPressed
-                                        onSelectionStart(isCtrlPressed)
-                                    } else if (event.button == PointerButton.Secondary && isSelected) {
-                                        // Right click on selected item - trigger callback
-                                        onContextMenu(DpOffset.Zero)
-                                    }
-                                }
-                                PointerEventType.Release -> {
-                                    if (event.button == PointerButton.Primary) {
-                                        onDragEnd()
-                                    }
-                                }
-                                PointerEventType.Move -> {
-                                    // Continuously notify hover during drag
-                                    if (event.buttons.isPrimaryPressed && isDragging) {
-                                        onHoverChange(true)
-                                    }
+                            }
+                            PointerEventType.Move -> {
+                                if (isDragging) {
+                                    onDragHover()
                                 }
                             }
                         }
                     }
                 }
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            LogItemContent(log, metaColor, tagColor, messageColor, pidTidText)
-        }
+            }
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        LogItemContent(log, metaColor, tagColor, messageColor, pidTidText)
     }
 }
 
@@ -270,7 +230,9 @@ private fun RowScope.LogItemContent(
         fontSize = 11.sp,
         fontFamily = FontFamily.Monospace,
         color = metaColor,
-        modifier = Modifier.width(140.dp)
+        modifier = Modifier.width(140.dp),
+        maxLines = 1,
+        softWrap = false
     )
     
     // PID/TID
@@ -279,7 +241,9 @@ private fun RowScope.LogItemContent(
         fontSize = 11.sp,
         fontFamily = FontFamily.Monospace,
         color = metaColor,
-        modifier = Modifier.width(80.dp)
+        modifier = Modifier.width(80.dp),
+        maxLines = 1,
+        softWrap = false
     )
     
     // Level
@@ -289,7 +253,9 @@ private fun RowScope.LogItemContent(
         fontWeight = FontWeight.Bold,
         fontFamily = FontFamily.Monospace,
         color = log.level.color,
-        modifier = Modifier.width(20.dp)
+        modifier = Modifier.width(20.dp),
+        maxLines = 1,
+        softWrap = false
     )
     
     // Tag
@@ -300,7 +266,8 @@ private fun RowScope.LogItemContent(
         fontFamily = FontFamily.Monospace,
         color = tagColor,
         modifier = Modifier.width(180.dp),
-        maxLines = 1
+        maxLines = 1,
+        softWrap = false
     )
     
     // Message (rightmost, takes remaining space)
@@ -310,6 +277,7 @@ private fun RowScope.LogItemContent(
         fontFamily = FontFamily.Monospace,
         color = messageColor,
         modifier = Modifier.weight(1f),
-        maxLines = 1
+        maxLines = 1,
+        softWrap = false
     )
 }

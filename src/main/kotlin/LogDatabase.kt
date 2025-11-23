@@ -41,18 +41,18 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
             )
         """)
         
-        // Create indexes for fast filtering
+        // Create composite indexes for faster queries
         connection?.createStatement()?.execute("""
-            CREATE INDEX IF NOT EXISTS idx_level ON logs(level)
+            CREATE INDEX IF NOT EXISTS idx_id_level ON logs(id, level)
         """)
         connection?.createStatement()?.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tag ON logs(tag)
+            CREATE INDEX IF NOT EXISTS idx_id_tag ON logs(id, tag)
         """)
         connection?.createStatement()?.execute("""
-            CREATE INDEX IF NOT EXISTS idx_created_at ON logs(created_at)
+            CREATE INDEX IF NOT EXISTS idx_level_id ON logs(level, id)
         """)
         connection?.createStatement()?.execute("""
-            CREATE INDEX IF NOT EXISTS idx_message ON logs(message)
+            CREATE INDEX IF NOT EXISTS idx_tag_id ON logs(tag, id)
         """)
     }
     
@@ -161,11 +161,15 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
             LIMIT ? OFFSET ?
         """
         
-        val logs = mutableListOf<LogEntry>()
+        val logs = ArrayList<LogEntry>(limit)
         connection?.prepareStatement(sql)?.use { stmt ->
+            // Optimize for sequential access
+            stmt.fetchSize = minOf(limit, 500)
             stmt.setInt(1, limit)
             stmt.setInt(2, offset)
+            
             stmt.executeQuery().use { rs ->
+                // Pre-allocate to avoid resizing
                 while (rs.next()) {
                     logs.add(resultSetToLogEntry(rs))
                 }

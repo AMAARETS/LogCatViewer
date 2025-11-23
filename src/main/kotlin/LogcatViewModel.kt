@@ -331,14 +331,16 @@ class LogcatViewModel {
     }
     
     suspend fun getLogsPage(offset: Int, limit: Int): List<LogEntry> {
-        // Query database directly without caching for better real-time updates
-        return database.getLogs(
-            offset = offset,
-            limit = limit,
-            searchText = searchText.value,
-            levels = selectedLevels.value,
-            tagFilter = tagFilter.value
-        )
+        // Query database with optimized dispatcher for better performance
+        return withContext(Dispatchers.IO) {
+            database.getLogs(
+                offset = offset,
+                limit = limit,
+                searchText = searchText.value,
+                levels = selectedLevels.value,
+                tagFilter = tagFilter.value
+            )
+        }
     }
     
     suspend fun exportLogs() {
