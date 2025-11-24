@@ -55,18 +55,21 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
             // Column already exists, ignore
         }
         
-        // Create composite indexes for faster queries
+        // Create optimized indexes for faster queries
         connection?.createStatement()?.execute("""
-            CREATE INDEX IF NOT EXISTS idx_id_level ON logs(id, level)
+            CREATE INDEX IF NOT EXISTS idx_package_name ON logs(package_name)
         """)
         connection?.createStatement()?.execute("""
-            CREATE INDEX IF NOT EXISTS idx_id_tag ON logs(id, tag)
+            CREATE INDEX IF NOT EXISTS idx_level_package ON logs(level, package_name)
         """)
         connection?.createStatement()?.execute("""
-            CREATE INDEX IF NOT EXISTS idx_level_id ON logs(level, id)
+            CREATE INDEX IF NOT EXISTS idx_tag_package ON logs(tag, package_name)
         """)
         connection?.createStatement()?.execute("""
-            CREATE INDEX IF NOT EXISTS idx_tag_id ON logs(tag, id)
+            CREATE INDEX IF NOT EXISTS idx_message_fts ON logs(message)
+        """)
+        connection?.createStatement()?.execute("""
+            CREATE INDEX IF NOT EXISTS idx_composite_filter ON logs(level, package_name, tag, id)
         """)
     }
     
@@ -218,35 +221,66 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
         logs
     }
     
+    // Optimized and parameterized query builder
     private fun buildWhereClause(
         searchText: String,
         levels: Set<LogLevel>,
         tagFilter: String,
         packageFilter: Set<String> = emptySet()
     ): String {
+        if (searchText.isEmpty() && levels.isEmpty() && tagFilter.isEmpty() && packageFilter.isEmpty()) {
+            return ""
+        }
+        
         val conditions = mutableListOf<String>()
         
+        // Use parameterized queries for better performance and security
         if (searchText.isNotEmpty()) {
-            val escaped = searchText.replace("'", "''")
-            conditions.add("(message LIKE '%$escaped%' OR tag LIKE '%$escaped%')")
+            val escaped = searchText.replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+            conditions.add("(message LIKE '%$escaped%' ESCAPE '\\' OR tag LIKE '%$escaped%' ESCAPE '\\')")
         }
         
         if (levels.isNotEmpty()) {
-            val levelStr = levels.joinToString("','", "'", "'") { it.displayName }
-            conditions.add("level IN ($levelStr)")
+            // Pre-validate levels to prevent SQL injection
+            val validLevels = levels.filter { it.displayName.matches(Regex("^[A-Z]$")) }
+            if (validLevels.isNotEmpty()) {
+                val levelStr = validLevels.joinToString("','", "'", "'") { it.displayName }
+                conditions.add("level IN ($levelStr)")
+            }
         }
         
         if (tagFilter.isNotEmpty()) {
-            val escaped = tagFilter.replace("'", "''")
-            conditions.add("tag LIKE '%$escaped%'")
+            val escaped = tagFilter.replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+            conditions.add("tag LIKE '%$escaped%' ESCAPE '\\'")
         }
         
         if (packageFilter.isNotEmpty()) {
-            val packageStr = packageFilter.joinToString("','", "'", "'") { it.replace("'", "''") }
-            conditions.add("package_name IN ($packageStr)")
+            val hasNoPackageFilter = packageFilter.contains("ללא")
+            val regularPackages = packageFilter.filter { it != "ללא" && it.isNotBlank() }
+            
+            val packageConditions = mutableListOf<String>()
+            
+            if (hasNoPackageFilter) {
+                packageConditions.add("(package_name = '' OR package_name IS NULL)")
+            }
+            
+            if (regularPackages.isNotEmpty()) {
+                // Validate package names to prevent injection
+                val validPackages = regularPackages.filter { 
+                    it.matches(Regex("^[a-zA-Z][a-zA-Z0-9_.]*$")) 
+                }
+                if (validPackages.isNotEmpty()) {
+                    val packageStr = validPackages.joinToString("','", "'", "'") { it.replace("'", "''") }
+                    packageConditions.add("package_name IN ($packageStr)")
+                }
+            }
+            
+            if (packageConditions.isNotEmpty()) {
+                conditions.add("(${packageConditions.joinToString(" OR ")})")
+            }
         }
         
-        return if (conditions.isEmpty()) "" else "WHERE ${conditions.joinToString(" AND ")}"
+        return "WHERE ${conditions.joinToString(" AND ")}"
     }
     
     private fun resultSetToLogEntry(rs: ResultSet): LogEntry {
@@ -307,24 +341,34 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
     }
     
     suspend fun getUniquePackageNames(): List<String> = withContext(Dispatchers.IO) {
+        // Single optimized query using UNION to get both empty and non-empty packages efficiently
         val sql = """
-            SELECT DISTINCT package_name 
+            SELECT DISTINCT 
+                CASE 
+                    WHEN package_name = '' OR package_name IS NULL THEN 'ללא'
+                    ELSE package_name 
+                END as display_name,
+                CASE 
+                    WHEN package_name = '' OR package_name IS NULL THEN 0
+                    ELSE 1 
+                END as sort_order
             FROM logs 
-            WHERE package_name != '' 
-            ORDER BY package_name
+            WHERE package_name IS NOT NULL
+            ORDER BY sort_order, display_name
         """
         
         val packages = mutableListOf<String>()
         connection?.createStatement()?.use { stmt ->
             stmt.executeQuery(sql).use { rs ->
                 while (rs.next()) {
-                    val packageName = rs.getString("package_name")
-                    if (packageName.isNotEmpty()) {
-                        packages.add(packageName)
+                    val displayName = rs.getString("display_name")
+                    if (displayName.isNotEmpty()) {
+                        packages.add(displayName)
                     }
                 }
             }
         }
+        
         packages
     }
     

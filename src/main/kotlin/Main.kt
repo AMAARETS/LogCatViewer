@@ -6,6 +6,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.runtime.*
+
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -111,16 +112,67 @@ fun LogcatViewerApp() {
                     Text("💾", fontSize = 20.sp)
                 }
                 
+                Spacer(Modifier.width(8.dp))
+                
+                // Settings button
+                IconButton(
+                    onClick = { viewModel.openSettings() }
+                ) {
+                    Text("⚙️", fontSize = 20.sp)
+                }
+                
                 Spacer(Modifier.weight(1f))
                 
-                // Show filtered count if filters are active
+                // Navigation buttons for windows
+                if (viewModel.totalWindows > 1) {
+                    // Previous window button
+                    IconButton(
+                        onClick = { viewModel.goToPreviousWindow() },
+                        enabled = viewModel.currentWindowIndex > 0
+                    ) {
+                        Text("⬅️", fontSize = 16.sp)
+                    }
+                    
+                    // Window indicator
+                    Text(
+                        "${viewModel.currentWindowIndex + 1}/${viewModel.totalWindows}",
+                        style = MaterialTheme.typography.body2,
+                        modifier = Modifier.padding(horizontal = 4.dp)
+                    )
+                    
+                    // Next window button
+                    IconButton(
+                        onClick = { viewModel.goToNextWindow() },
+                        enabled = viewModel.currentWindowIndex < viewModel.totalWindows - 1
+                    ) {
+                        Text("➡️", fontSize = 16.sp)
+                    }
+                    
+                    Spacer(Modifier.width(8.dp))
+                    
+                    // Jump to latest button
+                    IconButton(
+                        onClick = { viewModel.goToLatestWindow() },
+                        enabled = viewModel.currentWindowIndex < viewModel.totalWindows - 1
+                    ) {
+                        Text("⏭️", fontSize = 14.sp)
+                    }
+                    
+                    Spacer(Modifier.width(8.dp))
+                }
+                
+                // Show window info and total count
                 val hasFilters = viewModel.filterState.hasActiveFilters()
+                val totalInDB = viewModel.state.totalLogCount.value
+                val currentWindowSize = viewModel.state.filteredLogCount.value
                 
                 Text(
-                    if (hasFilters) {
-                        "רשומות: ${viewModel.state.filteredLogCount.value} מתוך ${viewModel.state.totalLogCount.value}"
+                    if (viewModel.totalWindows > 1) {
+                        "חלון: $currentWindowSize שורות | סה\"כ: $totalInDB"
+                    } else if (hasFilters) {
+                        "מסונן: $currentWindowSize מתוך $totalInDB"
                     } else {
-                        "רשומות: ${viewModel.state.totalLogCount.value}"
+                        "סה\"כ: $totalInDB שורות"
                     },
                     style = MaterialTheme.typography.body2
                 )
@@ -135,5 +187,17 @@ fun LogcatViewerApp() {
         
         // Status bar
         StatusBar(viewModel)
+        
+
     }
+    
+    // Settings dialog
+    SettingsDialog(
+        isOpen = viewModel.isSettingsOpen,
+        onClose = { viewModel.closeSettings() },
+        settings = viewModel.performanceSettings,
+        onSettingsChange = { newSettings ->
+            viewModel.updatePerformanceSettings(newSettings)
+        }
+    )
 }

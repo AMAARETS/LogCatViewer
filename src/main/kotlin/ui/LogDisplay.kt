@@ -56,8 +56,8 @@ fun LogDisplay(viewModel: LogcatViewModelNew) {
     // Pre-loading job for smoother scrolling
     var preloadJob by remember { mutableStateOf<Job?>(null) }
     
-    // מערכת גלילה חכמה עם ניהול זיכרון
-    val scrollManager = remember { scroll.ScrollManager(viewModel, scope) }
+    // מערכת גלילה חכמה עם ניהול זיכרון מותאם למשתמש
+    val scrollManager = remember { scroll.ScrollManager(viewModel, scope, viewModel.performanceSettings) }
     var cachedLogs by remember { mutableStateOf<Map<Int, LogEntry>>(emptyMap()) }
     var isLoading by remember { mutableStateOf(false) }
     
@@ -66,6 +66,11 @@ fun LogDisplay(viewModel: LogcatViewModelNew) {
     
     // טעינת לוגים מותאמת לחיסכון במשאבים
     var loadingJob by remember { mutableStateOf<Job?>(null) }
+    
+    // עדכון ScrollManager כשההגדרות משתנות
+    LaunchedEffect(viewModel.performanceSettings) {
+        scrollManager.updateSettings(viewModel.performanceSettings)
+    }
     
     fun loadLogsForRange(centerIndex: Int, force: Boolean = false) {
         // מנע טעינות מרובות במקביל
@@ -95,7 +100,7 @@ fun LogDisplay(viewModel: LogcatViewModelNew) {
         }
     }
     
-    // Ultra-responsive scroll monitoring with velocity tracking
+    // Ultra-responsive scroll monitoring with velocity tracking - מותאם לחלונות
     LaunchedEffect(Unit) {
         snapshotFlow { 
             Triple(
@@ -104,30 +109,39 @@ fun LogDisplay(viewModel: LogcatViewModelNew) {
                 listState.isScrollInProgress
             )
         }.collect { (index, _, isScrolling) ->
-            val visibleIndex = index + 15  // Slightly ahead for smoother experience
+            // מותאם לגודל החלון - לא יותר מהגודל המקסימלי
+            val maxIndex = minOf(displayCount - 1, viewModel.performanceSettings.batchSize - 1)
+            val visibleIndex = minOf(index + 15, maxIndex)
             
-            // Immediate loading for fast scrolling - no delay
+            // טעינה מיידית לגלילה מהירה - ללא עיכוב
             if (isScrolling) {
                 loadLogsForRange(visibleIndex)
             } else {
-                // Immediate loading when idle too - no delay
+                // טעינה מיידית גם במצב רגיל - ללא עיכוב
                 loadLogsForRange(visibleIndex, force = true)
             }
         }
     }
     
-    // Reduced frequency monitoring to prevent resource overload
+    // Reduced frequency monitoring to prevent resource overload - מותאם לחלונות
     LaunchedEffect(Unit) {
         while (true) {
             if (listState.isScrollInProgress && isDragging) {
-                val currentIndex = listState.firstVisibleItemIndex + 15
+                val maxIndex = minOf(displayCount - 1, viewModel.performanceSettings.batchSize - 1)
+                val currentIndex = minOf(listState.firstVisibleItemIndex + 15, maxIndex)
                 
-                // Load only during drag scrolling to reduce overhead
+                // טען רק במהלך גלילה בגרירה להפחתת עומס
                 loadLogsForRange(currentIndex, force = true)
                 
-                delay(30)  // Reduced frequency to prevent coroutine cancellations
+                // תדירות מופחתת למניעת ביטולי coroutine - מותאמת למהירות
+                val delayTime = when (viewModel.performanceSettings.scrollSpeed) {
+                    in 8..10 -> 20L  // עיכוב קטן לגלילה מהירה
+                    in 5..7 -> 30L   // עיכוב בינוני
+                    else -> 40L      // עיכוב גדול יותר לגלילה איטית
+                }
+                delay(delayTime)
             } else {
-                delay(200)  // Much slower when not dragging
+                delay(150)  // מהיר יותר כשלא גוררים
             }
         }
     }
@@ -179,6 +193,7 @@ fun LogDisplay(viewModel: LogcatViewModelNew) {
         viewModel.filterState.searchText.value,
         viewModel.filterState.selectedLevels.value,
         viewModel.filterState.tagFilter.value,
+        viewModel.currentWindowIndex,
         displayCount
     ) {
         // ניקוי מלא של הזיכרון
@@ -189,8 +204,14 @@ fun LogDisplay(viewModel: LogcatViewModelNew) {
         // כפה garbage collection
         System.gc()
         
-        val targetIndex = if (autoScroll) maxOf(0, displayCount - 1) else listState.firstVisibleItemIndex
-        loadLogsForRange(targetIndex, force = true)
+        // טען את החלון הנוכחי
+        val windowLogs = scrollManager.loadWindow(viewModel.currentWindowIndex, viewModel.performanceSettings.batchSize)
+        immediateCache = windowLogs
+        cachedLogs = windowLogs
+        
+        // גלול לתחילת החלון או לסוף (אם auto-scroll)
+        val targetIndex = if (autoScroll) maxOf(0, displayCount - 1) else 0
+        listState.scrollToItem(targetIndex)
     }
     
     // Auto-scroll to bottom on new logs
@@ -557,18 +578,37 @@ fun LogDisplay(viewModel: LogcatViewModelNew) {
                 adapter = rememberScrollbarAdapter(listState)
             )
             
-            // Loading indicator
+            // Loading indicator with speed info
             if (isLoading) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(16.dp)
                 ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = Color(0xFF2196F3)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = Color(0xFF2196F3)
+                        )
+                        
+                        // אינדיקטור מהירות גלילה
+                        if (listState.isScrollInProgress) {
+                            val speedText = when (viewModel.performanceSettings.scrollSpeed) {
+                                in 8..10 -> "🚀"
+                                in 5..7 -> "⚡"
+                                else -> "🐌"
+                            }
+                            Text(
+                                text = speedText,
+                                fontSize = 12.sp,
+                                color = Color.Gray
+                            )
+                        }
+                    }
                 }
             }
             

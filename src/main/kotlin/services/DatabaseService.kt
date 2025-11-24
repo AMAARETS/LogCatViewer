@@ -12,6 +12,11 @@ class DatabaseService {
     private val database = LogDatabase()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
+    // Cache for package names with timestamp
+    private var packageNamesCache: List<String>? = null
+    private var packageNamesCacheTime = 0L
+    private val cacheValidityMs = 30000L // 30 seconds
+    
     suspend fun initialize(): Boolean {
         return withContext(Dispatchers.IO) {
             try {
@@ -26,6 +31,10 @@ class DatabaseService {
     suspend fun insertLogsBatch(logs: List<LogEntry>) {
         withContext(Dispatchers.IO) {
             database.insertLogsBatch(logs)
+            // Invalidate cache only if new packages might have been added
+            if (logs.any { it.packageName.isNotEmpty() }) {
+                invalidatePackageNamesCache()
+            }
         }
     }
     
@@ -95,6 +104,8 @@ class DatabaseService {
     suspend fun clearAllLogs() {
         withContext(Dispatchers.IO) {
             database.clearAllLogs()
+            // Clear cache when all logs are deleted
+            invalidatePackageNamesCache()
         }
     }
     
@@ -106,8 +117,27 @@ class DatabaseService {
     
     suspend fun getUniquePackageNames(): List<String> {
         return withContext(Dispatchers.IO) {
-            database.getUniquePackageNames()
+            val now = System.currentTimeMillis()
+            
+            // Return cached result if still valid
+            packageNamesCache?.let { cached ->
+                if (now - packageNamesCacheTime < cacheValidityMs) {
+                    return@withContext cached
+                }
+            }
+            
+            // Fetch fresh data and cache it
+            val freshData = database.getUniquePackageNames()
+            packageNamesCache = freshData
+            packageNamesCacheTime = now
+            
+            freshData
         }
+    }
+    
+    suspend fun invalidatePackageNamesCache() {
+        packageNamesCache = null
+        packageNamesCacheTime = 0L
     }
     
     fun close() {

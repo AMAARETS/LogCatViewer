@@ -4,6 +4,8 @@ import services.*
 import models.*
 import device.DeviceManager
 import logcat.LogcatReader
+import settings.PerformanceSettings
+import androidx.compose.runtime.*
 
 /**
  * ViewModel מחודש - קטן ומתמקד בתיאום בין השירותים
@@ -12,6 +14,21 @@ class LogcatViewModelNew {
     // מנהלי מצב
     val state = LogcatState()
     val filterState = FilterState()
+    
+    // הגדרות ביצועים
+    var performanceSettings by mutableStateOf(PerformanceSettings.load())
+        private set
+    
+    // מצב מסך הגדרות
+    var isSettingsOpen by mutableStateOf(false)
+        private set
+    
+    // מערכת חלונות לוגים
+    var currentWindowIndex by mutableStateOf(0)
+        private set
+    
+    var totalWindows by mutableStateOf(1)
+        private set
     
     // שירותים
     private val deviceManager = DeviceManager()
@@ -138,7 +155,10 @@ class LogcatViewModelNew {
     
     suspend fun getLogsPage(offset: Int, limit: Int): List<LogEntry> {
         val filters = filterState.getFilters()
-        return databaseService.getLogs(offset, limit, filters.searchText, filters.levels, filters.tagFilter, filters.packageFilter)
+        // חישוב offset אמיתי לפי החלון הנוכחי
+        val windowOffset = currentWindowIndex * performanceSettings.batchSize
+        val actualOffset = windowOffset + offset
+        return databaseService.getLogs(actualOffset, limit, filters.searchText, filters.levels, filters.tagFilter, filters.packageFilter)
     }
     
     suspend fun getUniquePackageNames(): List<String> {
@@ -147,6 +167,70 @@ class LogcatViewModelNew {
     
     suspend fun getLogsBatch(requests: List<Pair<Int, Int>>): Map<Int, List<LogEntry>> {
         return databaseService.getLogsBatch(requests, filterState.getFilters())
+    }
+    
+    // פונקציות הגדרות
+    fun openSettings() {
+        isSettingsOpen = true
+    }
+    
+    fun closeSettings() {
+        isSettingsOpen = false
+    }
+    
+    fun updatePerformanceSettings(newSettings: PerformanceSettings) {
+        performanceSettings = newSettings.validate()
+        PerformanceSettings.save(performanceSettings)
+        
+        // עדכן את הגבלת הלוגים
+        val maxLogs = performanceSettings.batchSize
+        state.filteredLogCount.value = minOf(state.filteredLogCount.value, maxLogs)
+        
+        // הודע למסך על השינוי
+        state.statusMessage.value = "הגדרות עודכנו - מקסימום ${performanceSettings.batchSize} שורות"
+    }
+    
+    // פונקציות ניווט בחלונות
+    fun goToNextWindow() {
+        if (currentWindowIndex < totalWindows - 1) {
+            currentWindowIndex++
+            scope.launch {
+                updateLogCounts()
+                state.statusMessage.value = "עבר לחלון ${currentWindowIndex + 1} מתוך $totalWindows"
+            }
+        }
+    }
+    
+    fun goToPreviousWindow() {
+        if (currentWindowIndex > 0) {
+            currentWindowIndex--
+            scope.launch {
+                updateLogCounts()
+                state.statusMessage.value = "עבר לחלון ${currentWindowIndex + 1} מתוך $totalWindows"
+            }
+        }
+    }
+    
+    fun goToLatestWindow() {
+        currentWindowIndex = totalWindows - 1
+        scope.launch {
+            updateLogCounts()
+            state.statusMessage.value = "עבר לחלון האחרון (${totalWindows})"
+        }
+    }
+    
+    fun goToFirstWindow() {
+        currentWindowIndex = 0
+        scope.launch {
+            updateLogCounts()
+            state.statusMessage.value = "עבר לחלון הראשון"
+        }
+    }
+    
+    suspend fun getLogsForCurrentWindow(): List<LogEntry> {
+        val batchSize = performanceSettings.batchSize
+        val offset = currentWindowIndex * batchSize
+        return getLogsPage(offset, batchSize)
     }
     
     private suspend fun updateLogCounts() {
@@ -159,8 +243,34 @@ class LogcatViewModelNew {
             filters.packageFilter
         )
         
+        // חישוב מספר החלונות
+        val batchSize = performanceSettings.batchSize
+        val newTotalWindows = if (filteredCount > 0) {
+            ((filteredCount - 1) / batchSize) + 1
+        } else {
+            1
+        }
+        
+        // עדכון מספר החלונות
+        totalWindows = newTotalWindows
+        
+        // וודא שהחלון הנוכחי תקין
+        if (currentWindowIndex >= totalWindows) {
+            currentWindowIndex = maxOf(0, totalWindows - 1)
+        }
+        
+        // החלון הנוכחי מציג תמיד עד batchSize שורות
+        val currentWindowSize = if (currentWindowIndex == totalWindows - 1) {
+            // החלון האחרון - עלול להיות קטן יותר
+            val remainingLogs = filteredCount - (currentWindowIndex * batchSize)
+            minOf(remainingLogs, batchSize)
+        } else {
+            // חלון מלא
+            batchSize
+        }
+        
         withContext(Dispatchers.Main) {
-            state.updateLogCounts(totalCount, filteredCount)
+            state.updateLogCounts(filteredCount, currentWindowSize)
         }
     }
     

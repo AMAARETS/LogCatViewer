@@ -3,21 +3,23 @@ package scroll
 import models.LogEntry
 import LogcatViewModelNew
 import cache.LogCache
+import settings.PerformanceSettings
 import kotlinx.coroutines.*
 
 /**
- * מנהל גלילה חכם עם אופטימיזציות זיכרון
+ * מנהל גלילה חכם עם אופטימיזציות זיכרון מותאמות למשתמש
  */
 class ScrollManager(
     private val viewModel: LogcatViewModelNew,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private var settings: PerformanceSettings = PerformanceSettings.load()
 ) {
-    private val cache = LogCache(maxMemoryMB = 8, cleanupThresholdMB = 6) // הקטנה דרסטית לחיסכון בזיכרון
+    private var cache = LogCache(maxMemoryMB = settings.cacheSize, cleanupThresholdMB = settings.cacheSize - 2)
     
-    // הגדרות גלילה מותאמות לחיסכון בזיכרון - הקטנה נוספת
-    private val baseWindowSize = 100  // הקטנה נוספת
-    private val maxWindowSize = 300   // הקטנה נוספת
-    private val ultraFastWindowSize = 500 // הקטנה נוספת
+    // הגדרות גלילה דינמיות לפי הגדרות המשתמש
+    private var baseWindowSize = settings.getWindowSize()
+    private var maxWindowSize = settings.getWindowSize() * 2
+    private var ultraFastWindowSize = settings.getWindowSize() * 3
     
     private var currentWindowSize = baseWindowSize
     private var isLoading = false
@@ -31,7 +33,26 @@ class ScrollManager(
     private var isUltraFastScrolling = false
     
     /**
+     * עדכון הגדרות ביצועים
+     */
+    fun updateSettings(newSettings: PerformanceSettings) {
+        settings = newSettings.validate()
+        
+        // עדכן cache
+        cache = LogCache(maxMemoryMB = settings.cacheSize, cleanupThresholdMB = settings.cacheSize - 2)
+        
+        // עדכן גדלי חלונות
+        baseWindowSize = settings.getWindowSize()
+        maxWindowSize = settings.getWindowSize() * 2
+        ultraFastWindowSize = settings.getWindowSize() * 3
+        
+        // שמור הגדרות
+        PerformanceSettings.save(settings)
+    }
+    
+    /**
      * טוען לוגים לטווח נתון עם אופטימיזציות זיכרון ומניעת דף ריק
+     * עכשיו עם הגבלת כמות שורות לפי הגדרות המשתמש
      */
     suspend fun loadLogsForRange(
         centerIndex: Int, 
@@ -41,10 +62,13 @@ class ScrollManager(
         isDragScrolling: Boolean = false
     ): Map<Int, LogEntry> {
         
+        // החלון מוגבל תמיד לגודל הבאצ'
+        val windowDisplayCount = minOf(displayCount, settings.batchSize)
+        
         updateScrollMetrics(centerIndex, isScrollInProgress)
         
         val windowSize = calculateOptimalWindowSize(isScrollInProgress, isDragScrolling)
-        val range = calculateLoadRange(centerIndex, displayCount, windowSize)
+        val range = calculateLoadRange(centerIndex, windowDisplayCount, windowSize)
         
         // בדוק אם צריך לטעון
         if (!force && cache.isRangeCached(range, 0.7f) && !isLoading) {
@@ -57,30 +81,29 @@ class ScrollManager(
             if (hasVisibleLogs) {
                 return cachedLogs
             }
-            // אם אין לוגים בטווח הנראה, המשך לטעינה
         }
         
-        // ביטול job קודם אם צריך - רק אם באמת צריך
+        // ביטול job קודם אם צריך
         if ((isScrollInProgress || force) && loadingJob?.isActive == true) {
             loadingJob?.cancel()
         }
         
-        // טעינה מיידית לטווח הנראה - תמיד טען מיידית לחלקות מקסימלית
+        // טעינה מיידית לטווח הנראה - מותאם לחלון הנוכחי
         val visibleRange = if (isDragScrolling) {
-            // בגלילה בעת גרירה, טען טווח מתון למניעת הפסקות אך חסכוני
-            (centerIndex - 30)..(centerIndex + 30)
+            val size = minOf(settings.getWindowSize() / 4, windowDisplayCount / 4)
+            (centerIndex - size)..(centerIndex + size)
         } else if (isScrollInProgress) {
-            // בגלילה רגילה, טען טווח קטן
-            (centerIndex - 20)..(centerIndex + 20)
+            val size = minOf(settings.getWindowSize() / 6, windowDisplayCount / 6)
+            (centerIndex - size)..(centerIndex + size)
         } else {
-            // במצב רגיל, טען טווח קטן
-            (centerIndex - 15)..(centerIndex + 15)
+            val size = minOf(settings.getWindowSize() / 8, windowDisplayCount / 8)
+            (centerIndex - size)..(centerIndex + size)
         }
         
-        val visibleLogs = loadVisibleRangeImmediate(visibleRange, displayCount)
+        val visibleLogs = loadVisibleRangeImmediate(visibleRange, windowDisplayCount)
         
-        // טעינה ברקע לשאר הטווח - רק אם אין job פעיל
-        if (loadingJob?.isActive != true) {
+        // טעינה ברקע לשאר הטווח - רק בתוך החלון הנוכחי
+        if (settings.enablePreloading && loadingJob?.isActive != true) {
             loadingJob = scope.launch {
                 if (isActive) {
                     loadRangeWithPriority(range, centerIndex, isScrollInProgress)
@@ -124,10 +147,15 @@ class ScrollManager(
     }
     
     /**
-     * חישוב גודל חלון אופטימלי לפי מהירות גלילה
+     * חישוב גודל חלון אופטימלי לפי מהירות גלילה והגדרות המשתמש
      */
     private fun calculateOptimalWindowSize(isScrollInProgress: Boolean, isDragScrolling: Boolean = false): Int {
         if (!isScrollInProgress) return baseWindowSize
+        
+        // אם הטעינה החכמה מבוטלת, השתמש בגודל קבוע
+        if (!settings.enableSmartLoading) {
+            return baseWindowSize
+        }
         
         // בגלילה בעת גרירה לבחירה, השתמש בחלון מתון לחיסכון במשאבים
         if (isDragScrolling) {
@@ -135,11 +163,12 @@ class ScrollManager(
         }
         
         val avgVelocity = calculateAverageVelocity()
+        val speedMultiplier = settings.scrollSpeed / 5.0f // נרמול לפי הגדרות המשתמש
         
         return when {
-            avgVelocity > 1.5f -> ultraFastWindowSize
-            avgVelocity > 0.6f -> maxWindowSize
-            avgVelocity > 0.2f -> baseWindowSize * 2
+            avgVelocity > 1.5f * speedMultiplier -> ultraFastWindowSize
+            avgVelocity > 0.6f * speedMultiplier -> maxWindowSize
+            avgVelocity > 0.2f * speedMultiplier -> baseWindowSize * 2
             else -> baseWindowSize
         }
     }
@@ -176,7 +205,7 @@ class ScrollManager(
     }
     
     /**
-     * טעינה מיידית לטווח הנראה למניעת דף ריק
+     * טעינה מיידית לטווח הנראה למניעת דף ריק - מותאמת לחלונות
      */
     private suspend fun loadVisibleRangeImmediate(
         visibleRange: IntRange,
@@ -190,20 +219,53 @@ class ScrollManager(
             val count = endIdx - startIdx + 1
             
             if (count > 0) {
-                // טען בחלקים קטנים למהירות מקסימלית
-                val chunkSize = 50
-                for (chunkStart in startIdx..endIdx step chunkSize) {
-                    val chunkEnd = minOf(chunkStart + chunkSize - 1, endIdx)
-                    val chunkCount = chunkEnd - chunkStart + 1
+                // טען בחלקים מותאמים למהירות הגלילה
+                val chunkSize = when {
+                    isUltraFastScrolling -> 100  // חלקים גדולים יותר לגלילה מהירה
+                    scrollVelocity > 0.05f -> 75  // חלקים בינוניים
+                    else -> 50  // חלקים קטנים לגלילה רגילה
+                }
+                
+                // טען בחלקים מקבילים אם מותר
+                val maxConcurrentLoads = settings.getMaxConcurrentLoads()
+                
+                if (maxConcurrentLoads > 1 && count > chunkSize * 2) {
+                    // טעינה מקבילית לביצועים טובים יותר
+                    val chunks = (startIdx..endIdx step chunkSize).map { chunkStart ->
+                        val chunkEnd = minOf(chunkStart + chunkSize - 1, endIdx)
+                        chunkStart to chunkEnd
+                    }
                     
-                    if (chunkCount > 0) {
-                        val logs = viewModel.getLogsPage(chunkStart, chunkCount)
-                        logs.forEachIndexed { idx, log ->
-                            result[chunkStart + idx] = log
+                    chunks.chunked(maxConcurrentLoads).forEach { chunkBatch ->
+                        val jobs = chunkBatch.map { (chunkStart, chunkEnd) ->
+                            async {
+                                val chunkCount = chunkEnd - chunkStart + 1
+                                if (chunkCount > 0) {
+                                    val logs = viewModel.getLogsPage(chunkStart, chunkCount)
+                                    logs.forEachIndexed { idx, log ->
+                                        result[chunkStart + idx] = log
+                                    }
+                                    cache.putLogs(chunkStart, logs)
+                                }
+                            }
                         }
+                        jobs.forEach { it.await() }
+                    }
+                } else {
+                    // טעינה סדרתית רגילה
+                    for (chunkStart in startIdx..endIdx step chunkSize) {
+                        val chunkEnd = minOf(chunkStart + chunkSize - 1, endIdx)
+                        val chunkCount = chunkEnd - chunkStart + 1
                         
-                        // שמור ב-cache מיידית
-                        cache.putLogs(chunkStart, logs)
+                        if (chunkCount > 0) {
+                            val logs = viewModel.getLogsPage(chunkStart, chunkCount)
+                            logs.forEachIndexed { idx, log ->
+                                result[chunkStart + idx] = log
+                            }
+                            
+                            // שמור ב-cache מיידית
+                            cache.putLogs(chunkStart, logs)
+                        }
                     }
                 }
             }
@@ -215,7 +277,7 @@ class ScrollManager(
     }
 
     /**
-     * טעינה בעדיפויות עם חיסכון בזיכרון
+     * טעינה בעדיפויות עם חיסכון בזיכרון - מותאמת לחלונות
      */
     private suspend fun loadRangeWithPriority(
         range: IntRange, 
@@ -226,15 +288,21 @@ class ScrollManager(
         
         isLoading = true
         try {
-            // עדיפות 1: טווח נראה קטן (מיידי) - רק אם לא כבר נטען
-            val visibleRange = (centerIndex - 15)..(centerIndex + 15)
+            // עדיפות 1: טווח נראה מיידי - מותאם למהירות גלילה
+            val visibleSize = when {
+                isUltraFastScrolling -> 30  // טווח גדול יותר לגלילה מהירה
+                scrollVelocity > 0.05f -> 20  // טווח בינוני
+                else -> 15  // טווח קטן לגלילה רגילה
+            }
+            
+            val visibleRange = (centerIndex - visibleSize)..(centerIndex + visibleSize)
             val priorityRange = range.intersect(visibleRange.toSet()).let { 
-                if (it.isEmpty()) range.take(30) else it.toList() 
+                if (it.isEmpty()) range.take(visibleSize * 2) else it.toList() 
             }
             
             if (priorityRange.isNotEmpty()) {
                 val startIdx = priorityRange.minOrNull() ?: range.first
-                val endIdx = priorityRange.maxOrNull() ?: range.first + 29
+                val endIdx = priorityRange.maxOrNull() ?: range.first + (visibleSize * 2 - 1)
                 
                 // בדוק אם הטווח הזה כבר נטען
                 val needsLoading = (startIdx..endIdx).any { cache.getLog(it) == null }
@@ -247,43 +315,105 @@ class ScrollManager(
                 }
             }
             
-            // עדיפות 2: שאר הטווח בחלקים קטנים (רקע)
-            if (isScrollInProgress) {
-                delay(10) // עיכוב מינימלי
-            } else {
-                delay(50) // עיכוב גדול יותר כשלא גוללים
+            // עדיפות 2: שאר הטווח בחלקים - מותאם למהירות
+            val delayTime = when {
+                isUltraFastScrolling -> 5L   // עיכוב מינימלי לגלילה מהירה
+                isScrollInProgress -> 10L    // עיכוב קטן לגלילה רגילה
+                else -> 30L                  // עיכוב גדול יותר כשלא גוללים
             }
+            delay(delayTime)
             
             val remainingRange = range.subtract(priorityRange.toSet())
-            val chunkSize = if (isScrollInProgress) 100 else 50 // חלקים קטנים יותר
+            val chunkSize = when {
+                isUltraFastScrolling -> 150  // חלקים גדולים לגלילה מהירה
+                isScrollInProgress -> 100    // חלקים בינוניים
+                else -> 75                   // חלקים קטנים יותר
+            }
             
-            remainingRange.chunked(chunkSize).forEach { chunk ->
-                if (!coroutineContext.isActive) return@forEach
-                
-                val chunkStart = chunk.minOrNull() ?: return@forEach
-                val chunkEnd = chunk.maxOrNull() ?: return@forEach
-                
-                // בדוק אם החלק הזה צריך טעינה
-                val chunkNeedsLoading = (chunkStart..chunkEnd).any { cache.getLog(it) == null }
-                
-                if (chunkNeedsLoading) {
-                    val logs = viewModel.getLogsPage(chunkStart, chunkEnd - chunkStart + 1)
-                    if (logs.isNotEmpty()) {
-                        cache.putLogs(chunkStart, logs)
+            // טעינה מקבילית אם מותר ויש הרבה נתונים
+            val maxConcurrentLoads = settings.getMaxConcurrentLoads()
+            val chunks = remainingRange.chunked(chunkSize)
+            
+            if (maxConcurrentLoads > 1 && chunks.size > 2) {
+                // טעינה מקבילית
+                chunks.chunked(maxConcurrentLoads).forEach { chunkBatch ->
+                    if (!coroutineContext.isActive) return@forEach
+                    
+                    val jobs = chunkBatch.map { chunk ->
+                        async {
+                            val chunkStart = chunk.minOrNull() ?: return@async
+                            val chunkEnd = chunk.maxOrNull() ?: return@async
+                            
+                            val chunkNeedsLoading = (chunkStart..chunkEnd).any { cache.getLog(it) == null }
+                            
+                            if (chunkNeedsLoading) {
+                                val logs = viewModel.getLogsPage(chunkStart, chunkEnd - chunkStart + 1)
+                                if (logs.isNotEmpty()) {
+                                    cache.putLogs(chunkStart, logs)
+                                }
+                            }
+                        }
+                    }
+                    
+                    jobs.forEach { it.await() }
+                    
+                    // עיכוב קטן בין batch-ים
+                    if (isScrollInProgress) {
+                        delay(3)
+                    } else {
+                        delay(15)
                     }
                 }
-                
-                // עיכוב קטן בין chunks
-                if (isScrollInProgress) {
-                    delay(5)
-                } else {
-                    delay(20)
+            } else {
+                // טעינה סדרתית
+                chunks.forEach { chunk ->
+                    if (!coroutineContext.isActive) return@forEach
+                    
+                    val chunkStart = chunk.minOrNull() ?: return@forEach
+                    val chunkEnd = chunk.maxOrNull() ?: return@forEach
+                    
+                    val chunkNeedsLoading = (chunkStart..chunkEnd).any { cache.getLog(it) == null }
+                    
+                    if (chunkNeedsLoading) {
+                        val logs = viewModel.getLogsPage(chunkStart, chunkEnd - chunkStart + 1)
+                        if (logs.isNotEmpty()) {
+                            cache.putLogs(chunkStart, logs)
+                        }
+                    }
+                    
+                    // עיכוב קטן בין chunks
+                    if (isScrollInProgress) {
+                        delay(2)
+                    } else {
+                        delay(10)
+                    }
                 }
             }
             
         } finally {
             isLoading = false
         }
+    }
+    
+    /**
+     * טוען חלון ספציפי של לוגים - מותאם לביצועים מקסימליים
+     */
+    suspend fun loadWindow(windowIndex: Int, windowSize: Int): Map<Int, LogEntry> {
+        // נקה cache קודם כדי לחסוך זיכרון
+        clearCache()
+        
+        // אפס מטריקות גלילה לחלון החדש
+        lastScrollTime = 0L
+        lastScrollIndex = 0
+        scrollVelocity = 0f
+        scrollHistory.clear()
+        isUltraFastScrolling = false
+        
+        // חישוב טווח החלון (יחסי לחלון, לא מוחלט)
+        val range = 0 until windowSize
+        
+        // טען את החלון החדש בחלקים אופטימליים
+        return loadVisibleRangeImmediate(range, windowSize)
     }
     
     /**

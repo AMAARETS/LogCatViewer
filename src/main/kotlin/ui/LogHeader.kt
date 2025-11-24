@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import LogcatViewModelNew
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 
 @Composable
 fun LogHeader(viewModel: LogcatViewModelNew) {
@@ -105,25 +106,36 @@ private fun PackageHeaderWithFilter(
     var showFilterMenu by remember { mutableStateOf(false) }
     var availablePackages by remember { mutableStateOf<List<String>>(emptyList()) }
     var searchText by remember { mutableStateOf("") }
+    var isLoading by remember { mutableStateOf(false) }
+    var loadError by remember { mutableStateOf<String?>(null) }
     val selectedPackages by viewModel.filterState.selectedPackages
     val focusRequester = remember { FocusRequester() }
     
-    // Filter and sort packages alphabetically only
+    // Optimized filtering with memoization
     val filteredPackages = remember(availablePackages, searchText) {
-        val filtered = if (searchText.isEmpty()) {
+        if (searchText.isEmpty()) {
             availablePackages
         } else {
-            availablePackages.filter { it.contains(searchText, ignoreCase = true) }
+            val searchLower = searchText.lowercase()
+            availablePackages.filter { 
+                it.lowercase().contains(searchLower)
+            }
         }
-        
-        // Sort alphabetically only
-        filtered.sorted()
     }
     
-    // Load available packages when menu is opened
+    // Load available packages when menu is opened with error handling
     LaunchedEffect(showFilterMenu) {
-        if (showFilterMenu && availablePackages.isEmpty()) {
-            availablePackages = viewModel.getUniquePackageNames()
+        if (showFilterMenu) {
+            isLoading = true
+            loadError = null
+            try {
+                availablePackages = viewModel.getUniquePackageNames()
+            } catch (e: Exception) {
+                loadError = "שגיאה בטעינת רשימת החבילות: ${e.message}"
+                availablePackages = emptyList()
+            } finally {
+                isLoading = false
+            }
         }
     }
     
@@ -235,47 +247,90 @@ private fun PackageHeaderWithFilter(
             
             Divider()
             
-            // Package list with checkboxes in a scrollable Column
-            Column(
+            // Package list with loading state and error handling
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 200.dp)
-                    .verticalScroll(rememberScrollState())
             ) {
-                filteredPackages.forEach { packageName ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 2.dp)
-                    ) {
-                        Checkbox(
-                            checked = selectedPackages.contains(packageName),
-                            onCheckedChange = { 
-                                viewModel.filterState.togglePackage(packageName)
-                            },
-                            modifier = Modifier.size(16.dp)
-                        )
-                        
-                        Text(
-                            text = packageName,
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
+                when {
+                    isLoading -> {
+                        Row(
                             modifier = Modifier
-                                .weight(1f)
-                                .padding(vertical = 4.dp)
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("טוען חבילות...", fontSize = 10.sp, color = Color.Gray)
+                        }
+                    }
+                    
+                    loadError != null -> {
+                        Text(
+                            text = loadError!!,
+                            fontSize = 10.sp,
+                            color = Color.Red,
+                            modifier = Modifier.padding(12.dp)
                         )
                     }
-                }
-                
-                if (filteredPackages.isEmpty()) {
-                    Text(
-                        text = if (availablePackages.isEmpty()) "אין חבילות זמינות" else "לא נמצאו חבילות",
-                        fontSize = 10.sp,
-                        color = Color.Gray,
-                        modifier = Modifier.padding(12.dp)
-                    )
+                    
+                    else -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            filteredPackages.forEach { packageName ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 2.dp)
+                                ) {
+                                    Checkbox(
+                                        checked = selectedPackages.contains(packageName),
+                                        onCheckedChange = { 
+                                            viewModel.filterState.togglePackage(packageName)
+                                        },
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    
+                                    Text(
+                                        text = packageName,
+                                        fontSize = 10.sp,
+                                        fontFamily = if (packageName == "ללא") FontFamily.Default else FontFamily.Monospace,
+                                        color = if (packageName == "ללא") Color(0xFFFF9800) else LocalContentColor.current,
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(vertical = 4.dp)
+                                    )
+                                }
+                            }
+                            
+                            if (filteredPackages.isEmpty() && availablePackages.isNotEmpty()) {
+                                Text(
+                                    text = "לא נמצאו חבילות התואמות לחיפוש",
+                                    fontSize = 10.sp,
+                                    color = Color.Gray,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            } else if (availablePackages.isEmpty()) {
+                                Text(
+                                    text = "אין חבילות זמינות",
+                                    fontSize = 10.sp,
+                                    color = Color.Gray,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
