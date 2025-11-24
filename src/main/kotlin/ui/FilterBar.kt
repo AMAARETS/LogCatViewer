@@ -11,29 +11,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import LogLevel
-import LogcatViewModel
+import models.LogLevel
+import LogcatViewModelNew
 
 @Composable
-fun FilterBar(viewModel: LogcatViewModel) {
+fun FilterBar(viewModel: LogcatViewModelNew) {
     // Memoize callbacks to avoid recreating them
     val onSearchChange = remember {
         { text: String ->
-            viewModel.searchText.value = text
-            viewModel.onFiltersChanged()
+            viewModel.filterState.setSearchText(text)
         }
     }
     
     val onTagFilterChange = remember {
         { text: String ->
-            viewModel.tagFilter.value = text
-            viewModel.onFiltersChanged()
+            viewModel.filterState.setTagFilter(text)
         }
     }
     
     val onAutoScrollChange = remember {
         { checked: Boolean ->
-            viewModel.autoScroll.value = checked
+            viewModel.state.autoScroll.value = checked
         }
     }
     
@@ -49,7 +47,7 @@ fun FilterBar(viewModel: LogcatViewModel) {
             ) {
                 // Search field
                 OutlinedTextField(
-                    value = viewModel.searchText.value,
+                    value = viewModel.filterState.searchText.value,
                     onValueChange = onSearchChange,
                     modifier = Modifier.weight(1f),
                     placeholder = { Text("חיפוש בלוגים...") },
@@ -62,7 +60,7 @@ fun FilterBar(viewModel: LogcatViewModel) {
                 
                 // Tag filter
                 OutlinedTextField(
-                    value = viewModel.tagFilter.value,
+                    value = viewModel.filterState.tagFilter.value,
                     onValueChange = onTagFilterChange,
                     modifier = Modifier.width(200.dp),
                     placeholder = { Text("סינון לפי תג") },
@@ -75,7 +73,7 @@ fun FilterBar(viewModel: LogcatViewModel) {
                     modifier = Modifier.padding(horizontal = 8.dp)
                 ) {
                     Checkbox(
-                        checked = viewModel.autoScroll.value,
+                        checked = viewModel.state.autoScroll.value,
                         onCheckedChange = onAutoScrollChange
                     )
                     Text("גלילה אוטומטית", modifier = Modifier.padding(start = 4.dp))
@@ -91,17 +89,10 @@ fun FilterBar(viewModel: LogcatViewModel) {
                 Text("רמות:", modifier = Modifier.align(Alignment.CenterVertically))
                 
                 LogLevel.values().forEach { level ->
-                    val isSelected = viewModel.selectedLevels.value.contains(level)
+                    val isSelected = viewModel.filterState.selectedLevels.value.contains(level)
                     val onClick = remember(level) {
                         {
-                            val current = viewModel.selectedLevels.value.toMutableSet()
-                            if (current.contains(level)) {
-                                current.remove(level)
-                            } else {
-                                current.add(level)
-                            }
-                            viewModel.selectedLevels.value = current
-                            viewModel.onFiltersChanged()
+                            viewModel.filterState.toggleLevel(level)
                         }
                     }
                     

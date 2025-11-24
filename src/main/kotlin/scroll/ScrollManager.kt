@@ -1,7 +1,7 @@
 package scroll
 
-import LogEntry
-import LogcatViewModel
+import models.LogEntry
+import LogcatViewModelNew
 import cache.LogCache
 import kotlinx.coroutines.*
 
@@ -9,7 +9,7 @@ import kotlinx.coroutines.*
  * מנהל גלילה חכם עם אופטימיזציות זיכרון
  */
 class ScrollManager(
-    private val viewModel: LogcatViewModel,
+    private val viewModel: LogcatViewModelNew,
     private val scope: CoroutineScope
 ) {
     private val cache = LogCache(maxMemoryMB = 8, cleanupThresholdMB = 6) // הקטנה דרסטית לחיסכון בזיכרון

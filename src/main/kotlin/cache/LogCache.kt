@@ -1,6 +1,6 @@
 package cache
 
-import LogEntry
+import models.LogEntry
 import kotlinx.coroutines.*
 import java.util.concurrent.ConcurrentHashMap
 

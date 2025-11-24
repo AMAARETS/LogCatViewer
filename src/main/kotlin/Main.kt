@@ -17,6 +17,7 @@ import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import kotlinx.coroutines.launch
 import ui.*
+import models.*
 
 fun main() = application {
     val windowState = rememberWindowState(width = 1400.dp, height = 900.dp)
@@ -47,7 +48,7 @@ fun main() = application {
 @Composable
 @Preview
 fun LogcatViewerApp() {
-    val viewModel = remember { LogcatViewModel() }
+    val viewModel = remember { LogcatViewModelNew() }
     val scope = rememberCoroutineScope()
     
     LaunchedEffect(Unit) {
@@ -86,14 +87,14 @@ fun LogcatViewerApp() {
                 // Control buttons
                 IconButton(
                     onClick = { scope.launch { viewModel.startLogcat() } },
-                    enabled = viewModel.selectedDevice.value != null && !viewModel.isRunning.value
+                    enabled = viewModel.state.selectedDevice.value != null && !viewModel.state.isRunning.value
                 ) {
                     Icon(Icons.Default.PlayArrow, "התחל", tint = Color(0xFF4CAF50))
                 }
                 
                 IconButton(
                     onClick = { viewModel.stopLogcat() },
-                    enabled = viewModel.isRunning.value
+                    enabled = viewModel.state.isRunning.value
                 ) {
                     Text("⏹", fontSize = 20.sp, color = Color(0xFFF44336))
                 }
@@ -113,15 +114,13 @@ fun LogcatViewerApp() {
                 Spacer(Modifier.weight(1f))
                 
                 // Show filtered count if filters are active
-                val hasFilters = viewModel.searchText.value.isNotEmpty() || 
-                                viewModel.selectedLevels.value.isNotEmpty() || 
-                                viewModel.tagFilter.value.isNotEmpty()
+                val hasFilters = viewModel.filterState.hasActiveFilters()
                 
                 Text(
                     if (hasFilters) {
-                        "רשומות: ${viewModel.filteredLogCount.value} מתוך ${viewModel.totalLogCount.value}"
+                        "רשומות: ${viewModel.state.filteredLogCount.value} מתוך ${viewModel.state.totalLogCount.value}"
                     } else {
-                        "רשומות: ${viewModel.totalLogCount.value}"
+                        "רשומות: ${viewModel.state.totalLogCount.value}"
                     },
                     style = MaterialTheme.typography.body2
                 )

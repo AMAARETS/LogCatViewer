@@ -7,21 +7,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import LogcatViewModel
+import LogcatViewModelNew
 
 @Composable
-fun StatusBar(viewModel: LogcatViewModel) {
+fun StatusBar(viewModel: LogcatViewModelNew) {
     // Use derivedStateOf to minimize recompositions
-    val statusMessage by remember { derivedStateOf { viewModel.statusMessage.value } }
-    val isRunning by remember { derivedStateOf { viewModel.isRunning.value } }
-    val filteredCount by remember { derivedStateOf { viewModel.filteredLogCount.value } }
-    val totalCount by remember { derivedStateOf { viewModel.totalLogCount.value } }
+    val statusMessage by remember { derivedStateOf { viewModel.state.statusMessage.value } }
+    val isRunning by remember { derivedStateOf { viewModel.state.isRunning.value } }
+    val filteredCount by remember { derivedStateOf { viewModel.state.filteredLogCount.value } }
+    val totalCount by remember { derivedStateOf { viewModel.state.totalLogCount.value } }
     
     val hasFilters by remember {
         derivedStateOf {
-            viewModel.searchText.value.isNotEmpty() || 
-            viewModel.selectedLevels.value.isNotEmpty() || 
-            viewModel.tagFilter.value.isNotEmpty()
+            viewModel.filterState.hasActiveFilters()
         }
     }
     

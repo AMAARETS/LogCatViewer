@@ -23,23 +23,24 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.async
-import LogEntry
-import LogcatViewModel
+import models.LogEntry
+import LogcatViewModelNew
 import scroll.ScrollManager
+import utils.copyToClipboard
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
-fun LogDisplay(viewModel: LogcatViewModel) {
+fun LogDisplay(viewModel: LogcatViewModelNew) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     
     // Use derivedStateOf to avoid unnecessary recompositions
     val displayCount by remember {
-        derivedStateOf { viewModel.filteredLogCount.value }
+        derivedStateOf { viewModel.state.filteredLogCount.value }
     }
     
     val autoScroll by remember {
-        derivedStateOf { viewModel.autoScroll.value }
+        derivedStateOf { viewModel.state.autoScroll.value }
     }
     
     // Selection state for multi-select
@@ -175,9 +176,9 @@ fun LogDisplay(viewModel: LogcatViewModel) {
     
     // טעינה ראשונית ושינויי פילטרים + ניקוי זיכרון
     LaunchedEffect(
-        viewModel.searchText.value,
-        viewModel.selectedLevels.value,
-        viewModel.tagFilter.value,
+        viewModel.filterState.searchText.value,
+        viewModel.filterState.selectedLevels.value,
+        viewModel.filterState.tagFilter.value,
         displayCount
     ) {
         // ניקוי מלא של הזיכרון
@@ -193,7 +194,7 @@ fun LogDisplay(viewModel: LogcatViewModel) {
     }
     
     // Auto-scroll to bottom on new logs
-    LaunchedEffect(viewModel.lastLogUpdate.value) {
+    LaunchedEffect(viewModel.state.lastLogUpdate.value) {
         if (autoScroll && displayCount > 0) {
             listState.scrollToItem(maxOf(0, displayCount - 1))
         }
