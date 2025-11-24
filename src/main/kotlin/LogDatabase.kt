@@ -171,9 +171,10 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
     suspend fun getLogCount(
         searchText: String = "",
         levels: Set<LogLevel> = emptySet(),
-        tagFilter: String = ""
+        tagFilter: String = "",
+        packageFilter: Set<String> = emptySet()
     ): Int = withContext(Dispatchers.IO) {
-        val conditions = buildWhereClause(searchText, levels, tagFilter)
+        val conditions = buildWhereClause(searchText, levels, tagFilter, packageFilter)
         val sql = "SELECT COUNT(*) FROM logs $conditions"
         
         connection?.createStatement()?.use { stmt ->
@@ -188,9 +189,10 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
         limit: Int,
         searchText: String = "",
         levels: Set<LogLevel> = emptySet(),
-        tagFilter: String = ""
+        tagFilter: String = "",
+        packageFilter: Set<String> = emptySet()
     ): List<LogEntry> = withContext(Dispatchers.IO) {
-        val conditions = buildWhereClause(searchText, levels, tagFilter)
+        val conditions = buildWhereClause(searchText, levels, tagFilter, packageFilter)
         val sql = """
             SELECT id, timestamp, pid, tid, level, tag, message, package_name
             FROM logs
@@ -219,7 +221,8 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
     private fun buildWhereClause(
         searchText: String,
         levels: Set<LogLevel>,
-        tagFilter: String
+        tagFilter: String,
+        packageFilter: Set<String> = emptySet()
     ): String {
         val conditions = mutableListOf<String>()
         
@@ -236,6 +239,11 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
         if (tagFilter.isNotEmpty()) {
             val escaped = tagFilter.replace("'", "''")
             conditions.add("tag LIKE '%$escaped%'")
+        }
+        
+        if (packageFilter.isNotEmpty()) {
+            val packageStr = packageFilter.joinToString("','", "'", "'") { it.replace("'", "''") }
+            conditions.add("package_name IN ($packageStr)")
         }
         
         return if (conditions.isEmpty()) "" else "WHERE ${conditions.joinToString(" AND ")}"
@@ -271,7 +279,7 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
     }
     
     suspend fun exportLogs(filePath: String, filters: LogFilters) = withContext(Dispatchers.IO) {
-        val conditions = buildWhereClause(filters.searchText, filters.levels, filters.tagFilter)
+        val conditions = buildWhereClause(filters.searchText, filters.levels, filters.tagFilter, filters.packageFilter)
         val sql = """
             SELECT timestamp, pid, tid, level, tag, message, package_name
             FROM logs
@@ -298,6 +306,28 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
         }
     }
     
+    suspend fun getUniquePackageNames(): List<String> = withContext(Dispatchers.IO) {
+        val sql = """
+            SELECT DISTINCT package_name 
+            FROM logs 
+            WHERE package_name != '' 
+            ORDER BY package_name
+        """
+        
+        val packages = mutableListOf<String>()
+        connection?.createStatement()?.use { stmt ->
+            stmt.executeQuery(sql).use { rs ->
+                while (rs.next()) {
+                    val packageName = rs.getString("package_name")
+                    if (packageName.isNotEmpty()) {
+                        packages.add(packageName)
+                    }
+                }
+            }
+        }
+        packages
+    }
+    
     fun close() {
         insertStmt?.close()
         connection?.close()
@@ -307,5 +337,6 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
 data class LogFilters(
     val searchText: String = "",
     val levels: Set<LogLevel> = emptySet(),
-    val tagFilter: String = ""
+    val tagFilter: String = "",
+    val packageFilter: Set<String> = emptySet()
 )

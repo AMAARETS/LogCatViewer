@@ -11,6 +11,7 @@ class FilterState {
     val selectedLevels = mutableStateOf<Set<LogLevel>>(emptySet())
     val tagFilter = mutableStateOf("")
     val showOnlyErrors = mutableStateOf(false)
+    val selectedPackages = mutableStateOf<Set<String>>(emptySet())
     
     // Callbacks
     var onFiltersChanged: (() -> Unit)? = null
@@ -30,6 +31,11 @@ class FilterState {
         onFiltersChanged?.invoke()
     }
     
+    fun setSelectedPackages(packages: Set<String>) {
+        selectedPackages.value = packages
+        onFiltersChanged?.invoke()
+    }
+    
     fun toggleLevel(level: LogLevel) {
         val current = selectedLevels.value.toMutableSet()
         if (current.contains(level)) {
@@ -40,11 +46,22 @@ class FilterState {
         setSelectedLevels(current)
     }
     
+    fun togglePackage(packageName: String) {
+        val current = selectedPackages.value.toMutableSet()
+        if (current.contains(packageName)) {
+            current.remove(packageName)
+        } else {
+            current.add(packageName)
+        }
+        setSelectedPackages(current)
+    }
+    
     fun clearAllFilters() {
         searchText.value = ""
         selectedLevels.value = emptySet()
         tagFilter.value = ""
         showOnlyErrors.value = false
+        selectedPackages.value = emptySet()
         onFiltersChanged?.invoke()
     }
     
@@ -52,7 +69,8 @@ class FilterState {
         return searchText.value.isNotEmpty() || 
                selectedLevels.value.isNotEmpty() || 
                tagFilter.value.isNotEmpty() ||
-               showOnlyErrors.value
+               showOnlyErrors.value ||
+               selectedPackages.value.isNotEmpty()
     }
     
     fun getFilters(): services.LogFilters {
@@ -63,7 +81,8 @@ class FilterState {
             } else {
                 selectedLevels.value
             },
-            tagFilter = tagFilter.value
+            tagFilter = tagFilter.value,
+            packageFilter = selectedPackages.value
         )
     }
 }

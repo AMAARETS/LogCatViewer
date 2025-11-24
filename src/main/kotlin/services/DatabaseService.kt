@@ -34,16 +34,17 @@ class DatabaseService {
         limit: Int,
         searchText: String = "",
         levels: Set<LogLevel> = emptySet(),
-        tagFilter: String = ""
+        tagFilter: String = "",
+        packageFilter: Set<String> = emptySet()
     ): List<LogEntry> {
         return withContext(Dispatchers.IO) {
             try {
-                database.getLogs(offset, limit, searchText, levels, tagFilter)
+                database.getLogs(offset, limit, searchText, levels, tagFilter, packageFilter)
             } catch (e: Exception) {
                 // נסה עם limit קטן יותר
                 val safeLimit = minOf(limit, 50)
                 try {
-                    database.getLogs(offset, safeLimit, searchText, levels, tagFilter)
+                    database.getLogs(offset, safeLimit, searchText, levels, tagFilter, packageFilter)
                 } catch (e2: Exception) {
                     emptyList()
                 }
@@ -63,7 +64,8 @@ class DatabaseService {
                             limit = limit,
                             searchText = filters.searchText,
                             levels = filters.levels,
-                            tagFilter = filters.tagFilter
+                            tagFilter = filters.tagFilter,
+                            packageFilter = filters.packageFilter
                         )
                         offset to logs
                     } catch (e: Exception) {
@@ -84,9 +86,9 @@ class DatabaseService {
         }
     }
     
-    suspend fun getLogCount(searchText: String, levels: Set<LogLevel>, tagFilter: String): Int {
+    suspend fun getLogCount(searchText: String, levels: Set<LogLevel>, tagFilter: String, packageFilter: Set<String> = emptySet()): Int {
         return withContext(Dispatchers.IO) {
-            database.getLogCount(searchText, levels, tagFilter)
+            database.getLogCount(searchText, levels, tagFilter, packageFilter)
         }
     }
     
@@ -102,6 +104,12 @@ class DatabaseService {
         }
     }
     
+    suspend fun getUniquePackageNames(): List<String> {
+        return withContext(Dispatchers.IO) {
+            database.getUniquePackageNames()
+        }
+    }
+    
     fun close() {
         database.close()
         scope.cancel()
@@ -111,5 +119,6 @@ class DatabaseService {
 data class LogFilters(
     val searchText: String = "",
     val levels: Set<LogLevel> = emptySet(),
-    val tagFilter: String = ""
+    val tagFilter: String = "",
+    val packageFilter: Set<String> = emptySet()
 )

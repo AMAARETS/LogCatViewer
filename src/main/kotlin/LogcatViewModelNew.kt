@@ -138,7 +138,11 @@ class LogcatViewModelNew {
     
     suspend fun getLogsPage(offset: Int, limit: Int): List<LogEntry> {
         val filters = filterState.getFilters()
-        return databaseService.getLogs(offset, limit, filters.searchText, filters.levels, filters.tagFilter)
+        return databaseService.getLogs(offset, limit, filters.searchText, filters.levels, filters.tagFilter, filters.packageFilter)
+    }
+    
+    suspend fun getUniquePackageNames(): List<String> {
+        return databaseService.getUniquePackageNames()
     }
     
     suspend fun getLogsBatch(requests: List<Pair<Int, Int>>): Map<Int, List<LogEntry>> {
@@ -151,7 +155,8 @@ class LogcatViewModelNew {
         val filteredCount = databaseService.getLogCount(
             filters.searchText,
             filters.levels,
-            filters.tagFilter
+            filters.tagFilter,
+            filters.packageFilter
         )
         
         withContext(Dispatchers.Main) {

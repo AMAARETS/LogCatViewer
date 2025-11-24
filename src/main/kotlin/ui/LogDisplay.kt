@@ -257,7 +257,7 @@ fun LogDisplay(viewModel: LogcatViewModelNew) {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                     Column(modifier = Modifier.fillMaxSize()) {
                         // Add header
-                        LogHeader()
+                        LogHeader(viewModel)
                         
                         Box(
                             modifier = Modifier
