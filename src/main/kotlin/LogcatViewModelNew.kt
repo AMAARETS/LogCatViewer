@@ -42,6 +42,8 @@ class LogcatViewModelNew {
         // קישור LogService למסד נתונים
         logService.onBatchProcessed = { logs ->
             scope.launch {
+
+                
                 databaseService.insertLogsBatch(logs)
                 updateLogCounts()
             }
@@ -96,16 +98,19 @@ class LogcatViewModelNew {
         logService.startProcessing()
         
         // התחלת קריאת logcat
-        logcatReader.startReading(
-            deviceInfo = deviceInfo,
-            onLogReceived = { logEntry ->
-                logService.addLog(logEntry)
-            },
-            onError = { error ->
-                state.statusMessage.value = error
-                stopLogcat()
-            }
-        )
+        scope.launch {
+            logcatReader.startReading(
+                deviceInfo = deviceInfo,
+                onLogReceived = { logEntry ->
+
+                    logService.addLog(logEntry)
+                },
+                onError = { error ->
+                    state.statusMessage.value = error
+                    stopLogcat()
+                }
+            )
+        }
     }
     
     fun stopLogcat() {

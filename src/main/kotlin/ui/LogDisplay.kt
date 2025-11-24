@@ -238,7 +238,8 @@ fun LogDisplay(viewModel: LogcatViewModelNew) {
                                     immediateCache[it] ?: cachedLogs[it] ?: scrollManager.getLog(it)
                                 }
                                 val text = selectedLogs.joinToString("\n") { log ->
-                                    "${log.timestamp} ${log.pid}/${log.tid} ${log.level.displayName}/${log.tag}: ${log.message}"
+                                    val pkgDisplay = if (log.packageName.isNotEmpty()) " [${log.packageName}]" else ""
+                                    "${log.timestamp} ${log.pid}/${log.tid} ${log.level.displayName}/${log.tag}$pkgDisplay: ${log.message}"
                                 }
                                 copyToClipboard(text)
                                 selectedIndices = emptySet()
@@ -254,10 +255,14 @@ fun LogDisplay(viewModel: LogcatViewModelNew) {
             ) {
                 // Force LTR layout for log items
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .pointerInput(Unit) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // Add header
+                        LogHeader()
+                        
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .pointerInput(Unit) {
                                 awaitPointerEventScope {
                                     var currentMouseY: Float
                                     var currentViewportHeight: Float
@@ -542,6 +547,7 @@ fun LogDisplay(viewModel: LogcatViewModelNew) {
                         }
                     }
                 }
+                        }
                     }
                 }
             }

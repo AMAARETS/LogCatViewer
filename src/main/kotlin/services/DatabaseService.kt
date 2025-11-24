@@ -3,6 +3,7 @@ package services
 import kotlinx.coroutines.*
 import java.io.File
 import models.*
+import LogDatabase
 
 /**
  * שירות מסד נתונים - אחראי על כל הפעולות עם מסד הנתונים

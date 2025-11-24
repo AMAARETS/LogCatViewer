@@ -4,6 +4,10 @@ import java.sql.PreparedStatement
 import java.sql.ResultSet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import models.*
+import services.LogFilters
 
 class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
     private var connection: Connection? = null
@@ -37,9 +41,19 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
                 level TEXT NOT NULL,
                 tag TEXT NOT NULL,
                 message TEXT NOT NULL,
+                package_name TEXT DEFAULT '',
                 created_at INTEGER NOT NULL
             )
         """)
+        
+        // Add package_name column if it doesn't exist (for existing databases)
+        try {
+            connection?.createStatement()?.execute("""
+                ALTER TABLE logs ADD COLUMN package_name TEXT DEFAULT ''
+            """)
+        } catch (e: Exception) {
+            // Column already exists, ignore
+        }
         
         // Create composite indexes for faster queries
         connection?.createStatement()?.execute("""
@@ -58,15 +72,15 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
     
     private fun prepareStatements() {
         insertStmt = connection?.prepareStatement("""
-            INSERT INTO logs (timestamp, pid, tid, level, tag, message, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO logs (timestamp, pid, tid, level, tag, message, package_name, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """)
     }
     
     suspend fun insertLog(log: LogEntry) = withContext(Dispatchers.IO) {
         val sql = """
-            INSERT INTO logs (timestamp, pid, tid, level, tag, message, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO logs (timestamp, pid, tid, level, tag, message, package_name, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
         connection?.prepareStatement(sql)?.use { stmt ->
             stmt.setString(1, log.timestamp)
@@ -75,48 +89,72 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
             stmt.setString(4, log.level.displayName)
             stmt.setString(5, log.tag)
             stmt.setString(6, log.message)
-            stmt.setLong(7, System.currentTimeMillis())
+            stmt.setString(7, log.packageName)
+            stmt.setLong(8, System.currentTimeMillis())
             stmt.executeUpdate()
         }
     }
     
+    // הוסף synchronization כדי למנוע בעיות concurrency
+    private val insertMutex = kotlinx.coroutines.sync.Mutex()
+    
     suspend fun insertLogsBatch(logs: List<LogEntry>) = withContext(Dispatchers.IO) {
         if (logs.isEmpty()) return@withContext
         
-        val conn = connection ?: return@withContext
-        
-        try {
-            conn.autoCommit = false
-            val stmt = insertStmt ?: throw IllegalStateException("Database not initialized")
-            val timestamp = System.currentTimeMillis()
+        // השתמש ב-mutex כדי למנוע גישה מרובה למסד הנתונים
+        insertMutex.withLock {
+            val conn = connection ?: return@withContext
             
-            logs.forEach { log ->
-                stmt.setString(1, log.timestamp)
-                stmt.setString(2, log.pid)
-                stmt.setString(3, log.tid)
-                stmt.setString(4, log.level.displayName)
-                stmt.setString(5, log.tag)
-                stmt.setString(6, log.message)
-                stmt.setLong(7, timestamp)
-                stmt.addBatch()
-            }
-            stmt.executeBatch()
-            stmt.clearBatch()
-            conn.commit()
-        } catch (e: Exception) {
             try {
-                if (!conn.autoCommit) {
-                    conn.rollback()
+                // השתמש ב-prepared statement נפרד לכל batch כדי למנוע בעיות
+                val sql = """
+                    INSERT INTO logs (timestamp, pid, tid, level, tag, message, package_name, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                
+                conn.prepareStatement(sql).use { stmt ->
+                    val timestamp = System.currentTimeMillis()
+                    var addedCount = 0
+                    var skippedCount = 0
+                    
+                    logs.forEach { log ->
+                        // בדיקות חזקות לוודא שהנתונים תקינים
+                        if (log.timestamp.isBlank() || log.pid.isBlank() || log.tid.isBlank() || 
+                            log.level.displayName.isBlank() || log.tag.isBlank()) {
+                            println("Warning: Skipping invalid log: timestamp='${log.timestamp}', pid='${log.pid}', tid='${log.tid}', level='${log.level.displayName}', tag='${log.tag}'")
+                            skippedCount++
+                            return@forEach
+                        }
+                        
+                        try {
+                            stmt.setString(1, log.timestamp.trim())
+                            stmt.setString(2, log.pid.trim())
+                            stmt.setString(3, log.tid.trim())
+                            stmt.setString(4, log.level.displayName.trim())
+                            stmt.setString(5, log.tag.trim())
+                            stmt.setString(6, log.message.trim())
+                            stmt.setString(7, log.packageName.trim())
+                            stmt.setLong(8, timestamp)
+                            stmt.addBatch()
+                            addedCount++
+                        } catch (e: Exception) {
+                            println("Error adding log to batch: $log")
+                            println("Error: ${e.message}")
+                            skippedCount++
+                        }
+                    }
+                    
+                    if (addedCount > 0) {
+                        stmt.executeBatch()
+                    }
+                    
+                    if (skippedCount > 0) {
+                        println("Batch complete: added $addedCount, skipped $skippedCount logs")
+                    }
                 }
-            } catch (rollbackEx: Exception) {
-                // Ignore rollback errors
-            }
-            throw e
-        } finally {
-            try {
-                conn.autoCommit = true
-            } catch (ex: Exception) {
-                // Ignore
+            } catch (e: Exception) {
+                println("Error in insertLogsBatch: ${e.message}")
+                throw e
             }
         }
     }
@@ -154,7 +192,7 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
     ): List<LogEntry> = withContext(Dispatchers.IO) {
         val conditions = buildWhereClause(searchText, levels, tagFilter)
         val sql = """
-            SELECT id, timestamp, pid, tid, level, tag, message
+            SELECT id, timestamp, pid, tid, level, tag, message, package_name
             FROM logs
             $conditions
             ORDER BY id
@@ -222,7 +260,8 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
             tid = rs.getString("tid"),
             level = level,
             tag = rs.getString("tag"),
-            message = rs.getString("message")
+            message = rs.getString("message"),
+            packageName = rs.getString("package_name") ?: ""
         )
     }
     
@@ -234,7 +273,7 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
     suspend fun exportLogs(filePath: String, filters: LogFilters) = withContext(Dispatchers.IO) {
         val conditions = buildWhereClause(filters.searchText, filters.levels, filters.tagFilter)
         val sql = """
-            SELECT timestamp, pid, tid, level, tag, message
+            SELECT timestamp, pid, tid, level, tag, message, package_name
             FROM logs
             $conditions
             ORDER BY id
@@ -250,7 +289,9 @@ class LogDatabase(private val dbPath: String = "logcat_viewer.db") {
                         val level = rs.getString("level")
                         val tag = rs.getString("tag")
                         val message = rs.getString("message")
-                        writer.write("$timestamp $pid/$tid $level/$tag: $message\n")
+                        val packageName = rs.getString("package_name") ?: ""
+                        val pkgDisplay = if (packageName.isNotEmpty()) " [$packageName]" else ""
+                        writer.write("$timestamp $pid/$tid $level/$tag$pkgDisplay: $message\n")
                     }
                 }
             }

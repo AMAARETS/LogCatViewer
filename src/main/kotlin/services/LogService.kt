@@ -42,6 +42,8 @@ class LogService {
     fun addLog(logEntry: LogEntry) {
         if (!isProcessing.get()) return
         
+
+        
         logBuffer.offer(logEntry)
         onLogProcessed?.invoke(logEntry)
         
@@ -70,11 +72,16 @@ class LogService {
         
         // שליפת כל הלוגים מהbuffer
         while (logBuffer.isNotEmpty() && toFlush.size < batchSize) {
-            logBuffer.poll()?.let { toFlush.add(it) }
+            val log = logBuffer.poll()
+            if (log != null) {
+                toFlush.add(log)
+            }
         }
         
         if (toFlush.isNotEmpty()) {
             try {
+
+                
                 onBatchProcessed?.invoke(toFlush)
                 totalProcessed.addAndGet(toFlush.size.toLong())
             } catch (e: Exception) {

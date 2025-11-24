@@ -8,7 +8,8 @@ data class DeviceInfo(
     val name: String,
     val model: String = "",
     val androidVersion: String = "",
-    val status: DeviceStatus = DeviceStatus.UNKNOWN
+    val status: DeviceStatus = DeviceStatus.UNKNOWN,
+    val jadbDevice: Any? = null // שמירת ה-JadbDevice (Any כדי לא ליצור תלות)
 ) {
     fun getDisplayName(): String {
         return if (name.isNotEmpty() && model.isNotEmpty()) {

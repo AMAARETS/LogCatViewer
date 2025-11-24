@@ -1,6 +1,7 @@
 package utils
 
 import models.*
+import services.PackageNameResolver
 import java.util.regex.Pattern
 
 /**
@@ -19,7 +20,7 @@ object LogParser {
     /**
      * פיענוח שורת logcat לאובייקט LogEntry
      */
-    fun parseLogLine(line: String, id: Long = 0): LogEntry? {
+    fun parseLogLine(line: String, id: Long = 0, packageResolver: PackageNameResolver? = null): LogEntry? {
         val matcher = LOGCAT_PATTERN.matcher(line.trim())
         
         if (!matcher.matches()) {
@@ -37,6 +38,9 @@ object LogParser {
             
             val level = LogLevel.fromString(levelStr) ?: LogLevel.VERBOSE
             
+            // נסה לקבל שם חבילה מה-resolver, אחרת השתמש בשיטה הישנה
+            val packageName = packageResolver?.getPackageName(pid) ?: extractPackageName(tag, message)
+            
             return LogEntry(
                 id = id,
                 timestamp = timestamp,
@@ -44,7 +48,8 @@ object LogParser {
                 tid = tid,
                 level = level,
                 tag = tag,
-                message = message
+                message = message,
+                packageName = packageName
             )
         } catch (e: Exception) {
             return null
@@ -64,10 +69,34 @@ object LogParser {
             tid = "0",
             level = LogLevel.INFO,
             tag = "Unknown",
-            message = line
+            message = line,
+            packageName = ""
         )
     }
     
+    /**
+     * חילוץ שם החבילה מה-tag או מההודעה
+     */
+    private fun extractPackageName(tag: String, message: String): String {
+        // נסה לחלץ שם חבילה מה-tag אם הוא נראה כמו שם חבילה
+        if (tag.contains(".") && tag.matches(Regex("^[a-zA-Z][a-zA-Z0-9_.]*$"))) {
+            return tag
+        }
+        
+        // נסה לחלץ מההודעה אם יש דפוס של שם חבילה
+        val packagePattern = Regex("\\b([a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z][a-zA-Z0-9_]*)+)\\b")
+        val match = packagePattern.find(message)
+        if (match != null) {
+            val packageName = match.groupValues[1]
+            // וודא שזה נראה כמו שם חבילה אמיתי (לא URL או משהו אחר)
+            if (packageName.split(".").size >= 2 && !packageName.startsWith("http")) {
+                return packageName
+            }
+        }
+        
+        return ""
+    }
+
     /**
      * בדיקה אם השורה היא שורת logcat תקינה
      */

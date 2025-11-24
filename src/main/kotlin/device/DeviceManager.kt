@@ -8,12 +8,8 @@ import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.nio.charset.StandardCharsets
-
-data class DeviceInfo(
-    val device: JadbDevice,
-    val serial: String,
-    val model: String
-)
+import models.DeviceInfo
+import models.DeviceStatus
 
 /**
  * מנהל מכשירים - אחראי על חיבור וניהול מכשירי Android
@@ -97,7 +93,13 @@ class DeviceManager {
                 try {
                     val serial = device.serial
                     val model = getDeviceModel(device)
-                    DeviceInfo(device, serial, model)
+                    DeviceInfo(
+                        id = serial,
+                        name = model,
+                        model = model,
+                        status = DeviceStatus.DEVICE,
+                        jadbDevice = device
+                    )
                 } catch (e: Exception) {
                     null
                 }

@@ -10,13 +10,15 @@ data class LogEntry(
     val tid: String,
     val level: LogLevel,
     val tag: String,
-    val message: String
+    val message: String,
+    val packageName: String = ""
 ) {
     /**
      * המרה לטקסט לייצוא
      */
     fun toDisplayString(): String {
-        return "$timestamp ${level.displayName}/$tag($pid): $message"
+        val pkgDisplay = if (packageName.isNotEmpty()) " [$packageName]" else ""
+        return "$timestamp ${level.displayName}/$tag($pid)$pkgDisplay: $message"
     }
     
     /**

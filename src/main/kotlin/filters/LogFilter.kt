@@ -1,7 +1,7 @@
 package filters
 
-import LogEntry
-import LogLevel
+import models.LogEntry
+import models.LogLevel
 import androidx.compose.runtime.mutableStateOf
 
 /**

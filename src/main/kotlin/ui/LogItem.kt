@@ -80,7 +80,8 @@ fun LogItem(log: LogEntry) {
     
     val pidTidText = remember(log.pid, log.tid) { "${log.pid}/${log.tid}" }
     val fullLogText = remember(log) {
-        "${log.timestamp} ${log.pid}/${log.tid} ${log.level.displayName}/${log.tag}: ${log.message}"
+        val pkgDisplay = if (log.packageName.isNotEmpty()) " [${log.packageName}]" else ""
+        "${log.timestamp} ${log.pid}/${log.tid} ${log.level.displayName}/${log.tag}$pkgDisplay: ${log.message}"
     }
     
     var isHovered by remember { mutableStateOf(false) }
@@ -223,7 +224,7 @@ private fun RowScope.LogItemContent(
     messageColor: Color,
     pidTidText: String
 ) {
-    // LTR layout: Timestamp -> PID/TID -> Level -> Tag -> Message
+    // LTR layout: Timestamp -> PID/TID -> Level -> Tag -> Package -> Message
     
     // Timestamp (leftmost)
     Text(
@@ -266,7 +267,18 @@ private fun RowScope.LogItemContent(
         fontWeight = FontWeight.SemiBold,
         fontFamily = FontFamily.Monospace,
         color = tagColor,
-        modifier = Modifier.width(180.dp),
+        modifier = Modifier.width(150.dp),
+        maxLines = 1,
+        softWrap = false
+    )
+    
+    // Package Name
+    Text(
+        text = log.packageName,
+        fontSize = 11.sp,
+        fontFamily = FontFamily.Monospace,
+        color = Color(0xFF90CAF9), // Light blue color for package names
+        modifier = Modifier.width(200.dp),
         maxLines = 1,
         softWrap = false
     )
@@ -292,6 +304,7 @@ private fun RowScope.OptimizedLogItemContent(
     pidTidText: String
 ) {
     // Ultra-optimized content rendering with minimal allocations
+    val packageColor = remember { Color(0xFF90CAF9) } // Light blue for package names
     
     // Timestamp (leftmost) - optimized
     Text(
@@ -337,7 +350,19 @@ private fun RowScope.OptimizedLogItemContent(
         fontWeight = FontWeight.SemiBold,
         fontFamily = FontFamily.Monospace,
         color = tagColor,
-        modifier = Modifier.width(180.dp),
+        modifier = Modifier.width(150.dp),
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip
+    )
+    
+    // Package Name - optimized
+    Text(
+        text = log.packageName,
+        fontSize = 11.sp,
+        fontFamily = FontFamily.Monospace,
+        color = packageColor,
+        modifier = Modifier.width(200.dp),
         maxLines = 1,
         softWrap = false,
         overflow = TextOverflow.Clip

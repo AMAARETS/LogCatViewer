@@ -42,12 +42,12 @@ fun DeviceSelector(viewModel: LogcatViewModelNew) {
             expanded = expanded,
             onDismissRequest = { expanded = false }
         ) {
-            if (viewModel.devices.value.isEmpty()) {
+            if (viewModel.devices.isEmpty()) {
                 DropdownMenuItem(onClick = {}) {
                     Text("אין מכשירים מחוברים")
                 }
             } else {
-                viewModel.devices.value.forEach { deviceInfo ->
+                viewModel.devices.forEach { deviceInfo ->
                     DropdownMenuItem(
                         onClick = {
                             viewModel.state.setSelectedDevice(deviceInfo)
