@@ -44,3 +44,4 @@ logcat_viewer.db
 logcat_viewer.db-shm
 logcat_viewer.db-wal
 *.md
+LogCatViewer.xml

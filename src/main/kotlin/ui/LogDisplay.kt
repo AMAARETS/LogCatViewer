@@ -22,8 +22,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.async
 import LogEntry
 import LogcatViewModel
+import scroll.ScrollManager
 
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
@@ -48,170 +50,144 @@ fun LogDisplay(viewModel: LogcatViewModel) {
     
     // Auto-scroll state
     var autoScrollJob by remember { mutableStateOf<Job?>(null) }
+    var lastDragLoadTime by remember { mutableStateOf(0L) }
     
-    // Smart adaptive cache - grows/shrinks based on scroll speed
-    val baseWindowSize = 400  // Optimized for smooth scrolling
-    val maxWindowSize = 2500  // Large enough for fast scrolling, not wasteful
-    var currentWindowSize by remember { mutableStateOf(baseWindowSize) }
+    // Pre-loading job for smoother scrolling
+    var preloadJob by remember { mutableStateOf<Job?>(null) }
+    
+    // מערכת גלילה חכמה עם ניהול זיכרון
+    val scrollManager = remember { scroll.ScrollManager(viewModel, scope) }
     var cachedLogs by remember { mutableStateOf<Map<Int, LogEntry>>(emptyMap()) }
-    var cachedRange by remember { mutableStateOf(0..0) }
     var isLoading by remember { mutableStateOf(false) }
-    var loadingJob by remember { mutableStateOf<Job?>(null) }
-    var lastScrollTime by remember { mutableStateOf(0L) }
-    var lastScrollIndex by remember { mutableStateOf(0) }
-    var lastScrollDirection by remember { mutableStateOf(0) } // 1=down, -1=up, 0=none
     
-    // Smart load with adaptive window and predictive prefetching
+    // State for immediate UI updates
+    var immediateCache by remember { mutableStateOf<Map<Int, LogEntry>>(emptyMap()) }
+    
+    // טעינת לוגים מותאמת לחיסכון במשאבים
+    var loadingJob by remember { mutableStateOf<Job?>(null) }
+    
     fun loadLogsForRange(centerIndex: Int, force: Boolean = false) {
-        val now = System.currentTimeMillis()
-        val scrollDistance = centerIndex - lastScrollIndex
+        // מנע טעינות מרובות במקביל
+        if (isLoading && !force) return
         
-        // Detect scroll direction and speed
-        if (scrollDistance != 0) {
-            lastScrollDirection = if (scrollDistance > 0) 1 else -1
-        }
-        
-        val isScrollingFast = listState.isScrollInProgress && kotlin.math.abs(scrollDistance) > 50
-        val isScrollingSlow = listState.isScrollInProgress && kotlin.math.abs(scrollDistance) > 0
-        val isIdle = !listState.isScrollInProgress
-        
-        // Adjust window size based on scroll speed - MUCH larger for fast scrolling
-        currentWindowSize = when {
-            isScrollingFast -> maxWindowSize  // Very large window
-            isScrollingSlow -> baseWindowSize * 4  // Large for slow scroll
-            else -> baseWindowSize  // Normal when idle
-        }
-        
-        // Predictive prefetching - load ahead in scroll direction
-        val prefetchBias = if (listState.isScrollInProgress) {
-            lastScrollDirection * (currentWindowSize / 3)  // Load more in scroll direction
-        } else 0
-        
-        val halfWindow = currentWindowSize / 2
-        val startIndex = maxOf(0, centerIndex - halfWindow + prefetchBias)
-        val endIndex = minOf(displayCount - 1, centerIndex + halfWindow + prefetchBias)
-        
-        // More aggressive preload margin
-        val preloadMargin = currentWindowSize / 3
-        
-        val needsReload = force || 
-            centerIndex !in cachedRange || 
-            centerIndex < cachedRange.first + preloadMargin || 
-            centerIndex > cachedRange.last - preloadMargin
-        
-        // Skip if not needed or already loading same range
-        if (!needsReload || (isLoading && !force)) return
-        
-        // Cancel previous job
+        // בטל job קודם אם יש
         loadingJob?.cancel()
         
-        lastScrollTime = now
-        lastScrollIndex = centerIndex
-        
         loadingJob = scope.launch {
-            // NO delay during scroll - immediate loading!
-            if (isIdle && !force) {
-                delay(30)  // Tiny delay only when idle
-            }
-            
-            if (!isActive) return@launch
-            
             isLoading = true
             try {
-                val currentCount = displayCount
-                if (currentCount == 0) {
-                    cachedLogs = emptyMap()
-                    cachedRange = 0..0
-                    return@launch
-                }
+                val newLogs = scrollManager.loadLogsForRange(
+                    centerIndex = centerIndex,
+                    displayCount = displayCount,
+                    isScrollInProgress = listState.isScrollInProgress,
+                    force = force,
+                    isDragScrolling = isDragging
+                )
                 
-                val newRange = startIndex..endIndex
+                // עדכון מיידי של ה-cache
+                immediateCache = newLogs
+                cachedLogs = newLogs
                 
-                // Smart progressive loading with priority
-                // Start with existing cache - keep overlapping entries
-                val baseCache = cachedLogs.filterKeys { it in newRange }.toMutableMap()
-                
-                // Calculate visible range for priority loading
-                val visibleStart = listState.firstVisibleItemIndex
-                val visibleEnd = visibleStart + 50  // ~50 visible items
-                
-                // Priority 1: Load visible area FIRST (small chunk for instant display)
-                val priorityStart = maxOf(startIndex, visibleStart - 10)
-                val priorityEnd = minOf(endIndex, visibleEnd + 10)
-                
-                if (priorityStart <= priorityEnd) {
-                    val priorityLogs = viewModel.getLogsPage(priorityStart, priorityEnd - priorityStart + 1)
-                    priorityLogs.forEachIndexed { idx, log ->
-                        baseCache[priorityStart + idx] = log
-                    }
-                    // Update UI immediately with visible content
-                    cachedLogs = baseCache.toMap()
-                    cachedRange = priorityStart..priorityEnd
-                }
-                
-                // Priority 2: Load rest in larger chunks (background fill)
-                val chunkSize = 800  // Larger chunks for non-visible area
-                
-                // Load before visible area
-                var currentOffset = startIndex
-                while (currentOffset < priorityStart && isActive) {
-                    val chunkEnd = minOf(priorityStart - 1, currentOffset + chunkSize - 1)
-                    val chunkLogs = viewModel.getLogsPage(currentOffset, chunkEnd - currentOffset + 1)
-                    
-                    chunkLogs.forEachIndexed { idx, log ->
-                        baseCache[currentOffset + idx] = log
-                    }
-                    
-                    cachedLogs = baseCache.toMap()
-                    cachedRange = startIndex..maxOf(cachedRange.last, chunkEnd)
-                    
-                    currentOffset = chunkEnd + 1
-                }
-                
-                // Load after visible area
-                currentOffset = priorityEnd + 1
-                while (currentOffset <= endIndex && isActive) {
-                    val chunkEnd = minOf(endIndex, currentOffset + chunkSize - 1)
-                    val chunkLogs = viewModel.getLogsPage(currentOffset, chunkEnd - currentOffset + 1)
-                    
-                    chunkLogs.forEachIndexed { idx, log ->
-                        baseCache[currentOffset + idx] = log
-                    }
-                    
-                    cachedLogs = baseCache.toMap()
-                    cachedRange = startIndex..chunkEnd
-                    
-                    currentOffset = chunkEnd + 1
-                }
-                
-                // Final update
-                cachedLogs = baseCache
-                cachedRange = newRange
             } finally {
                 isLoading = false
             }
         }
     }
     
-    // Monitor scroll position with snapshotFlow for immediate response
+    // Ultra-responsive scroll monitoring with velocity tracking
     LaunchedEffect(Unit) {
         snapshotFlow { 
-            listState.firstVisibleItemIndex to listState.isScrollInProgress 
-        }.collect { (index, _) ->
-            val visibleIndex = index + 10
-            loadLogsForRange(visibleIndex)
+            Triple(
+                listState.firstVisibleItemIndex,
+                listState.firstVisibleItemScrollOffset,
+                listState.isScrollInProgress
+            )
+        }.collect { (index, _, isScrolling) ->
+            val visibleIndex = index + 15  // Slightly ahead for smoother experience
+            
+            // Immediate loading for fast scrolling - no delay
+            if (isScrolling) {
+                loadLogsForRange(visibleIndex)
+            } else {
+                // Immediate loading when idle too - no delay
+                loadLogsForRange(visibleIndex, force = true)
+            }
         }
     }
     
-    // Initial load and filter changes
+    // Reduced frequency monitoring to prevent resource overload
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (listState.isScrollInProgress && isDragging) {
+                val currentIndex = listState.firstVisibleItemIndex + 15
+                
+                // Load only during drag scrolling to reduce overhead
+                loadLogsForRange(currentIndex, force = true)
+                
+                delay(30)  // Reduced frequency to prevent coroutine cancellations
+            } else {
+                delay(200)  // Much slower when not dragging
+            }
+        }
+    }
+    
+    // מנגנון נוסף לוודא שהתצוגה מתעדכנת אחרי גלילה מהירה
+    LaunchedEffect(Unit) {
+        snapshotFlow { listState.isScrollInProgress }.collect { isScrolling ->
+            if (!isScrolling) {
+                // כשהגלילה נעצרת, כפה טעינה מחדש של הטווח הנראה
+                delay(100) // המתן קצת שהגלילה תתייצב
+                val centerIndex = listState.firstVisibleItemIndex + 15
+                loadLogsForRange(centerIndex, force = true)
+            }
+        }
+    }
+    
+    // זיהוי מצב "דף ריק" ותיקון אוטומטי + ניקוי זיכרון
+    LaunchedEffect(Unit) {
+        var cleanupCounter = 0
+        while (true) {
+            delay(1000) // בדוק כל שנייה (פחות תכוף)
+            
+            if (!listState.isScrollInProgress && displayCount > 0 && !isLoading) {
+                val visibleRange = listState.firstVisibleItemIndex..(listState.firstVisibleItemIndex + 30)
+                val visibleLogsCount = visibleRange.count { cachedLogs.containsKey(it) }
+                
+                // אם יש פחות מ-3 לוגים נראים מתוך 30, זה כנראה "דף ריק"
+                if (visibleLogsCount < 3) {
+                    val centerIndex = listState.firstVisibleItemIndex + 15
+                    loadLogsForRange(centerIndex, force = true)
+                }
+                
+                // ניקוי זיכרון תקופתי - כל 10 שניות
+                cleanupCounter++
+                if (cleanupCounter >= 10) {
+                    cleanupCounter = 0
+                    // נקה את ה-cache הישן
+                    scrollManager.clearCache()
+                    // טען מחדש את הטווח הנוכחי
+                    val centerIndex = listState.firstVisibleItemIndex + 15
+                    loadLogsForRange(centerIndex, force = true)
+                }
+            }
+        }
+    }
+    
+    // טעינה ראשונית ושינויי פילטרים + ניקוי זיכרון
     LaunchedEffect(
         viewModel.searchText.value,
         viewModel.selectedLevels.value,
         viewModel.tagFilter.value,
         displayCount
     ) {
+        // ניקוי מלא של הזיכרון
+        scrollManager.clearCache()
+        immediateCache = emptyMap()
         cachedLogs = emptyMap()
-        cachedRange = 0..0
+        
+        // כפה garbage collection
+        System.gc()
+        
         val targetIndex = if (autoScroll) maxOf(0, displayCount - 1) else listState.firstVisibleItemIndex
         loadLogsForRange(targetIndex, force = true)
     }
@@ -220,6 +196,17 @@ fun LogDisplay(viewModel: LogcatViewModel) {
     LaunchedEffect(viewModel.lastLogUpdate.value) {
         if (autoScroll && displayCount > 0) {
             listState.scrollToItem(maxOf(0, displayCount - 1))
+        }
+    }
+    
+    // ניקוי משאבים כשהרכיב נהרס
+    DisposableEffect(Unit) {
+        onDispose {
+            // ביטול כל ה-jobs
+            autoScrollJob?.cancel()
+            preloadJob?.cancel()
+            loadingJob?.cancel()
+            scrollManager.cleanup()
         }
     }
     
@@ -246,7 +233,9 @@ fun LogDisplay(viewModel: LogcatViewModel) {
                     if (selectedIndices.isNotEmpty()) {
                         listOf(
                             ContextMenuItem("העתק ${selectedIndices.size} שורות") {
-                                val selectedLogs = selectedIndices.sorted().mapNotNull { cachedLogs[it] }
+                                val selectedLogs = selectedIndices.sorted().mapNotNull { 
+                                    immediateCache[it] ?: cachedLogs[it] ?: scrollManager.getLog(it)
+                                }
                                 val text = selectedLogs.joinToString("\n") { log ->
                                     "${log.timestamp} ${log.pid}/${log.tid} ${log.level.displayName}/${log.tag}: ${log.message}"
                                 }
@@ -279,9 +268,13 @@ fun LogDisplay(viewModel: LogcatViewModel) {
                                                 if (event.button == PointerButton.Primary && isDragging) {
                                                     isDragging = false
                                                     dragStartIndex = null
-                                                    // Stop auto-scroll
+                                                    // Stop auto-scroll and preloading
                                                     autoScrollJob?.cancel()
                                                     autoScrollJob = null
+                                                    preloadJob?.cancel()
+                                                    preloadJob = null
+                                                    loadingJob?.cancel()
+                                                    loadingJob = null
                                                 }
                                             }
                                             PointerEventType.Move -> {
@@ -294,22 +287,37 @@ fun LogDisplay(viewModel: LogcatViewModel) {
                                                     val scrollOffset = listState.firstVisibleItemScrollOffset.toFloat()
                                                     val firstVisibleIndex = listState.firstVisibleItemIndex
                                                     
-                                                    // Auto-scroll zones (top and bottom 50px)
-                                                    val autoScrollZone = 50.dp.toPx()
+                                                    // Auto-scroll zones - larger zones for better UX
+                                                    val autoScrollZone = 80.dp.toPx()
+                                                    val extremeScrollZone = 30.dp.toPx()
                                                     
-                                                    // Calculate scroll speed based on distance from edge
+                                                    // Calculate scroll speed based on distance from edge - much more aggressive
                                                     val scrollSpeed = when {
                                                         currentMouseY < autoScrollZone -> {
-                                                            // Scrolling up
+                                                            // Scrolling up - exponential speed increase
                                                             val distance = autoScrollZone - currentMouseY
                                                             val speedFactor = (distance / autoScrollZone).coerceIn(0f, 1f)
-                                                            -(1 + speedFactor * 4)
+                                                            val baseSpeed = if (distance < extremeScrollZone) {
+                                                                // Extreme zone - moderate fast scrolling
+                                                                -(4 + speedFactor * 8)
+                                                            } else {
+                                                                // Normal zone - progressive speed
+                                                                -(1 + speedFactor * 6)
+                                                            }
+                                                            baseSpeed
                                                         }
                                                         currentMouseY > currentViewportHeight - autoScrollZone -> {
-                                                            // Scrolling down
+                                                            // Scrolling down - exponential speed increase
                                                             val distance = currentMouseY - (currentViewportHeight - autoScrollZone)
                                                             val speedFactor = (distance / autoScrollZone).coerceIn(0f, 1f)
-                                                            1 + speedFactor * 4
+                                                            val baseSpeed = if (distance < extremeScrollZone) {
+                                                                // Extreme zone - moderate fast scrolling
+                                                                4 + speedFactor * 8
+                                                            } else {
+                                                                // Normal zone - progressive speed
+                                                                1 + speedFactor * 6
+                                                            }
+                                                            baseSpeed
                                                         }
                                                         else -> 0f
                                                     }
@@ -320,39 +328,82 @@ fun LogDisplay(viewModel: LogcatViewModel) {
                                                             while (isDragging) {
                                                                 val mouseY = currentMouseY
                                                                 val viewHeight = currentViewportHeight
-                                                                val zone = 50.dp.toPx()
+                                                                val zone = 80.dp.toPx()
+                                                                val extremeZone = 30.dp.toPx()
                                                                 
                                                                 val speed = when {
                                                                     mouseY < zone -> {
                                                                         val dist = zone - mouseY
                                                                         val factor = (dist / zone).coerceIn(0f, 1f)
-                                                                        -(1 + factor * 4)
+                                                                        if (dist < extremeZone) {
+                                                                            // Extreme zone - moderate fast scrolling
+                                                                            -(4 + factor * 8)
+                                                                        } else {
+                                                                            // Normal zone - progressive speed
+                                                                            -(1 + factor * 6)
+                                                                        }
                                                                     }
                                                                     mouseY > viewHeight - zone -> {
                                                                         val dist = mouseY - (viewHeight - zone)
                                                                         val factor = (dist / zone).coerceIn(0f, 1f)
-                                                                        1 + factor * 4
+                                                                        if (dist < extremeZone) {
+                                                                            // Extreme zone - moderate fast scrolling
+                                                                            4 + factor * 8
+                                                                        } else {
+                                                                            // Normal zone - progressive speed
+                                                                            1 + factor * 6
+                                                                        }
                                                                     }
                                                                     else -> 0f
                                                                 }
                                                                 
                                                                 if (speed != 0f && dragStartIndex != null) {
-                                                                    val targetIndex = (listState.firstVisibleItemIndex + speed.toInt())
+                                                                    val currentIndex = listState.firstVisibleItemIndex
+                                                                    val targetIndex = (currentIndex + speed.toInt())
                                                                         .coerceIn(0, displayCount - 1)
-                                                                    listState.scrollToItem(targetIndex)
                                                                     
-                                                                    // Update selection based on current scroll position
-                                                                    val relY = mouseY + listState.firstVisibleItemScrollOffset.toFloat()
-                                                                    val hovIdx = listState.firstVisibleItemIndex + (relY / itemHeight).toInt()
-                                                                    val clampIdx = hovIdx.coerceIn(0, displayCount - 1)
+                                                                    // Only scroll if we're not at the edge or if we can still move
+                                                                    if (targetIndex != currentIndex) {
+                                                                        // Smooth scrolling with immediate log loading
+                                                                        listState.scrollToItem(targetIndex)
                                                                     
-                                                                    lastHoveredIndex = clampIdx
-                                                                    val start = minOf(dragStartIndex!!, clampIdx)
-                                                                    val end = maxOf(dragStartIndex!!, clampIdx)
-                                                                    selectedIndices = (start..end).toSet()
+                                                                    // Force immediate loading of logs for smooth display during fast scroll
+                                                                        // Throttled loading to prevent resource overload
+                                                                        val currentTime = System.currentTimeMillis()
+                                                                        if (currentTime - lastDragLoadTime > 100) { // Max 10 loads per second to prevent cancellations
+                                                                            lastDragLoadTime = currentTime
+                                                                            loadLogsForRange(targetIndex, force = true)
+                                                                        }
                                                                     
-                                                                    // Delay based on speed
-                                                                    val delayMs = (100 / kotlin.math.abs(speed).coerceAtLeast(1f)).toLong()
+                                                                        // Update selection based on current scroll position
+                                                                        val relY = mouseY + listState.firstVisibleItemScrollOffset.toFloat()
+                                                                        val hovIdx = listState.firstVisibleItemIndex + (relY / itemHeight).toInt()
+                                                                        val clampIdx = hovIdx.coerceIn(0, displayCount - 1)
+                                                                        
+                                                                        lastHoveredIndex = clampIdx
+                                                                        val start = minOf(dragStartIndex!!, clampIdx)
+                                                                        val end = maxOf(dragStartIndex!!, clampIdx)
+                                                                        selectedIndices = (start..end).toSet()
+                                                                    } else {
+                                                                        // At edge - still update selection but don't scroll
+                                                                        val relY = mouseY + listState.firstVisibleItemScrollOffset.toFloat()
+                                                                        val hovIdx = listState.firstVisibleItemIndex + (relY / itemHeight).toInt()
+                                                                        val clampIdx = hovIdx.coerceIn(0, displayCount - 1)
+                                                                        
+                                                                        lastHoveredIndex = clampIdx
+                                                                        val start = minOf(dragStartIndex!!, clampIdx)
+                                                                        val end = maxOf(dragStartIndex!!, clampIdx)
+                                                                        selectedIndices = (start..end).toSet()
+                                                                    }
+                                                                    
+                                                                    // Balanced delay to prevent resource overload while maintaining smoothness
+                                                                    val absSpeed = kotlin.math.abs(speed)
+                                                                    val delayMs = when {
+                                                                        absSpeed > 15f -> 20L  // Fast scrolling - reasonable delay
+                                                                        absSpeed > 8f -> 30L   // Medium-fast scrolling
+                                                                        absSpeed > 4f -> 40L   // Medium scrolling
+                                                                        else -> 60L            // Slow scrolling
+                                                                    }
                                                                     delay(delayMs)
                                                                 } else {
                                                                     break
@@ -394,31 +445,69 @@ fun LogDisplay(viewModel: LogcatViewModel) {
                         count = displayCount,
                         key = { index -> 
                             // Use log ID if available for better key stability
-                            cachedLogs[index]?.id ?: index 
+                            cachedLogs[index]?.id ?: scrollManager.getLog(index)?.id ?: index 
                         },
                         contentType = { "LogEntry" }
                     ) { index ->
-                        val log = cachedLogs[index]
+                        // קבל לוג מה-cache המיידי או מה-cache הרגיל או מה-ScrollManager
+                        val log = immediateCache[index] ?: cachedLogs[index] ?: scrollManager.getLog(index)
                         if (log != null) {
                             LogItemWithSelection(
                                 log = log,
                                 isSelected = selectedIndices.contains(index),
                                 isDragging = isDragging,
-                                onSelectionStart = { isCtrlPressed ->
-                                    if (isCtrlPressed) {
-                                        // Toggle selection with Ctrl
-                                        selectedIndices = if (selectedIndices.contains(index)) {
-                                            selectedIndices - index
-                                        } else {
-                                            selectedIndices + index
+                                onSelectionStart = { modifiers ->
+                                    when {
+                                        modifiers.isCtrlPressed -> {
+                                            // Toggle selection with Ctrl
+                                            selectedIndices = if (selectedIndices.contains(index)) {
+                                                selectedIndices - index
+                                            } else {
+                                                selectedIndices + index
+                                            }
+                                            dragStartIndex = null
+                                            isDragging = false
                                         }
-                                        dragStartIndex = null
-                                        isDragging = false
-                                    } else {
-                                        // Start new selection (for dragging)
-                                        selectedIndices = setOf(index)
-                                        dragStartIndex = index
-                                        isDragging = true
+                                        modifiers.isShiftPressed && dragStartIndex != null -> {
+                                            // Extend selection with Shift
+                                            val start = minOf(dragStartIndex!!, index)
+                                            val end = maxOf(dragStartIndex!!, index)
+                                            selectedIndices = (start..end).toSet()
+                                            isDragging = false
+                                        }
+                                        modifiers.isShiftPressed && selectedIndices.isNotEmpty() -> {
+                                            // Extend from last selected item
+                                            val lastSelected = selectedIndices.maxOrNull() ?: index
+                                            val start = minOf(lastSelected, index)
+                                            val end = maxOf(lastSelected, index)
+                                            selectedIndices = (start..end).toSet()
+                                            dragStartIndex = lastSelected
+                                            isDragging = false
+                                        }
+                                        else -> {
+                                            // Start new selection (for dragging)
+                                            selectedIndices = setOf(index)
+                                            dragStartIndex = index
+                                            isDragging = true
+                                            
+                                            // Simplified preloading to reduce resource usage
+                                            preloadJob = scope.launch {
+                                                // Smaller preload range to prevent overload
+                                                val preloadRange = (index - 50)..(index + 50)
+                                                for (preloadIndex in preloadRange step 25) {
+                                                    if (isDragging && preloadIndex in 0 until displayCount) {
+                                                        scrollManager.loadLogsForRange(
+                                                            centerIndex = preloadIndex,
+                                                            displayCount = displayCount,
+                                                            isScrollInProgress = false,
+                                                            force = false,
+                                                            isDragScrolling = true
+                                                        )
+                                                        delay(50) // Longer delay to prevent overwhelming
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 },
                                 onDragHover = {
@@ -435,7 +524,14 @@ fun LogDisplay(viewModel: LogcatViewModel) {
                                 }
                             )
                         } else {
-                            // Lightweight placeholder - no LaunchedEffect to avoid coroutine overhead
+                            // אם אין לוג, נסה לטעון אותו מיידית
+                            LaunchedEffect(index) {
+                                if (!isLoading) {
+                                    loadLogsForRange(index, force = true)
+                                }
+                            }
+                            
+                            // Ultra-lightweight placeholder with minimal overhead
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()

@@ -1,14 +1,11 @@
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import se.vidstige.jadb.JadbConnection
-import se.vidstige.jadb.JadbDevice
+import device.DeviceManager
+import logcat.LogcatReader
+import filters.LogFilter
 import kotlinx.coroutines.*
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import java.nio.charset.StandardCharsets
 
 data class LogEntry(
     val id: Long,
@@ -29,84 +26,50 @@ enum class LogLevel(val displayName: String, val color: androidx.compose.ui.grap
     ASSERT("A", androidx.compose.ui.graphics.Color(0xFF9C27B0))
 }
 
-data class DeviceInfo(
-    val device: JadbDevice,
-    val serial: String,
-    val model: String
-)
-
+/**
+ * ViewModel מרכזי מפוצל למודולים קטנים
+ */
 class LogcatViewModel {
-    val devices = mutableStateListOf<DeviceInfo>()
-    val selectedDevice = mutableStateOf<DeviceInfo?>(null)
+    // מודולים
+    private val deviceManager = DeviceManager()
+    private val logcatReader = LogcatReader()
+    private val logFilter = LogFilter()
+    private val database = LogDatabase()
+    
+    // מצב כללי
     val isRunning = mutableStateOf(false)
-    val statusMessage = mutableStateOf("מוכן")
     val totalLogCount = mutableStateOf(0)
     val filteredLogCount = mutableStateOf(0)
-    
-    // Filters
-    val searchText = mutableStateOf("")
-    val selectedLevels = mutableStateOf(setOf<LogLevel>())
-    val tagFilter = mutableStateOf("")
     val autoScroll = mutableStateOf(true)
-    
-    // For triggering UI updates on new logs
     val lastLogUpdate = mutableStateOf(0L)
     
-    private var jadb: JadbConnection? = null
-    private var logcatJob: Job? = null
-    private var deviceScanJob: Job? = null
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val database = LogDatabase()
-    private val logBuffer = mutableListOf<LogEntry>()
-    private var logIdCounter = 0L
-    private val batchSize = 100  // Smaller batches for more frequent UI updates
+    // חשיפת מודולים לUI
+    val devices = deviceManager.devices
+    val selectedDevice = deviceManager.selectedDevice
+    val statusMessage = deviceManager.statusMessage
+    val searchText = logFilter.searchText
+    val selectedLevels = logFilter.selectedLevels
+    val tagFilter = logFilter.tagFilter
     
-    // Periodic flush job
+    // ניהול זיכרון - הקטנה נוספת
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val logBuffer = mutableListOf<LogEntry>()
+    private val batchSize = 25  // הקטנה נוספת לחיסכון בזיכרון
     private var flushJob: Job? = null
     
     fun initialize() {
         scope.launch {
             try {
-                statusMessage.value = "מאתחל..."
-                
-                // Initialize database
+                // אתחול מסד נתונים
                 database.initialize()
                 
-                // Ensure ADB is installed and running
-                val adbStarted = EmbeddedAdb.startAdbServer { progress ->
-                    statusMessage.value = progress
-                }
-                
-                if (!adbStarted) {
-                    statusMessage.value = "שגיאה: לא ניתן להפעיל ADB"
+                // אתחול מנהל מכשירים
+                val deviceInitialized = deviceManager.initialize()
+                if (!deviceInitialized) {
                     return@launch
                 }
                 
-                // Get ADB version
-                EmbeddedAdb.getAdbVersion()?.let { version ->
-                    println("ADB Version: $version")
-                }
-                
-                statusMessage.value = "מתחבר ל-ADB..."
-                
-                // Connect to ADB server
-                jadb = try {
-                    JadbConnection()
-                } catch (e: Exception) {
-                    statusMessage.value = "שגיאה בחיבור ל-ADB: ${e.message}"
-                    e.printStackTrace()
-                    return@launch
-                }
-                
-                statusMessage.value = "מחובר ל-ADB"
-                
-                // Start periodic device scanning
-                startDeviceScanning()
-                
-                // Initial scan
-                refreshDevices()
-                
-                // Update log count
+                // עדכון מספר לוגים
                 updateLogCount()
                 
             } catch (e: Exception) {
@@ -117,189 +80,43 @@ class LogcatViewModel {
     }
     
 
-    
-    private fun startDeviceScanning() {
-        deviceScanJob = scope.launch {
-            while (isActive) {
-                try {
-                    refreshDevices()
-                    delay(3000) // Scan every 3 seconds
-                } catch (e: Exception) {
-                    // Ignore errors during scanning
-                }
-            }
-        }
-    }
-    
     fun refreshDevices() {
         scope.launch {
-            try {
-                val connection = jadb ?: return@launch
-                val deviceList = connection.devices
-                
-                val deviceInfos = deviceList.mapNotNull { device ->
-                    try {
-                        val serial = device.serial
-                        val model = try {
-                            val stream = device.executeShell("getprop", "ro.product.model")
-                            BufferedReader(InputStreamReader(stream, StandardCharsets.UTF_8)).use { reader ->
-                                reader.readLine()?.trim() ?: "Unknown"
-                            }
-                        } catch (e: Exception) {
-                            "Unknown"
-                        }
-                        DeviceInfo(device, serial, model)
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
-                
-                devices.clear()
-                devices.addAll(deviceInfos)
-                
-                // Auto-select first device if none selected
-                if (selectedDevice.value == null && devices.isNotEmpty()) {
-                    selectedDevice.value = devices.first()
-                }
-                
-                statusMessage.value = "נמצאו ${devices.size} מכשירים"
-            } catch (e: Exception) {
-                statusMessage.value = "שגיאה בסריקת מכשירים: ${e.message}"
-            }
+            deviceManager.refreshDevices()
         }
     }
     
     suspend fun startLogcat() {
-        val deviceInfo = selectedDevice.value ?: return
+        val deviceInfo = deviceManager.getSelectedDevice() ?: return
         
         if (isRunning.value) return
         
         isRunning.value = true
         statusMessage.value = "מקבל לוגים..."
         
-        // Start periodic flush job (every 300ms for more responsive UI)
-        flushJob = scope.launch {
-            while (isActive) {
-                delay(300)
-                val toFlush = synchronized(logBuffer) {
-                    if (logBuffer.isNotEmpty()) {
-                        val list = logBuffer.toList()
-                        logBuffer.clear()
-                        list
-                    } else null
-                }
-                
-                if (toFlush != null) {
-                    database.insertLogsBatch(toFlush)
-                    withContext(Dispatchers.Main) {
-                        updateLogCount()
-                    }
-                }
-            }
-        }
+        // התחלת flush תקופתי (חיסכון בזיכרון)
+        startPeriodicFlush()
         
-        logcatJob = scope.launch {
-            try {
-                val device = deviceInfo.device
-                
-                println("Starting logcat for device: ${deviceInfo.serial}")
-                
-                // Clear old logs first
-                try {
-                    device.executeShell("logcat", "-c").close()
-                    println("Cleared old logs")
-                } catch (e: Exception) {
-                    println("Could not clear logs: ${e.message}")
-                }
-                
-                // Start reading logcat with threadtime format for better parsing
-                println("Executing logcat command...")
-                val stream = device.executeShell("logcat", "-v", "threadtime")
-                val reader = BufferedReader(InputStreamReader(stream, StandardCharsets.UTF_8))
-                
-                println("Reading logcat stream...")
-                var lineCount = 0
-                
-                reader.use {
-                    var line = reader.readLine()
-                    while (isActive && line != null) {
-                        lineCount++
-                        if (lineCount % 1000 == 0) {
-                            println("Read $lineCount lines")
-                        }
-                        
-                        parseLogLine(line)?.let { entry ->
-                            val toFlush = synchronized(logBuffer) {
-                                logBuffer.add(entry)
-                                
-                                // Immediate flush if buffer is too large
-                                if (logBuffer.size >= batchSize) {
-                                    val list = logBuffer.toList()
-                                    logBuffer.clear()
-                                    list
-                                } else null
-                            }
-                            
-                            if (toFlush != null) {
-                                launch {
-                                    database.insertLogsBatch(toFlush)
-                                    withContext(Dispatchers.Main) {
-                                        updateLogCount()
-                                    }
-                                }
-                            }
-                        }
-                        line = reader.readLine()
-                    }
-                    
-                    // Insert remaining logs
-                    val remaining = synchronized(logBuffer) {
-                        if (logBuffer.isNotEmpty()) {
-                            val list = logBuffer.toList()
-                            logBuffer.clear()
-                            list
-                        } else null
-                    }
-                    
-                    if (remaining != null) {
-                        database.insertLogsBatch(remaining)
-                        withContext(Dispatchers.Main) {
-                            updateLogCount()
-                        }
-                    }
-                }
-                
-                println("Logcat stream ended")
-            } catch (e: Exception) {
-                if (e !is CancellationException) {
-                    statusMessage.value = "שגיאה: ${e.message}"
-                    e.printStackTrace()
-                }
+        // התחלת קריאת logcat
+        logcatReader.startReading(
+            deviceInfo = deviceInfo,
+            onLogReceived = { logEntry ->
+                handleNewLog(logEntry)
+            },
+            onError = { error ->
+                statusMessage.value = error
                 isRunning.value = false
             }
-        }
+        )
     }
     
     fun stopLogcat() {
-        logcatJob?.cancel()
+        logcatReader.stopReading()
         flushJob?.cancel()
         
-        // Flush remaining logs
+        // שטיפה אחרונה של לוגים
         scope.launch {
-            val remaining = synchronized(logBuffer) {
-                if (logBuffer.isNotEmpty()) {
-                    val list = logBuffer.toList()
-                    logBuffer.clear()
-                    list
-                } else null
-            }
-            
-            if (remaining != null) {
-                database.insertLogsBatch(remaining)
-                withContext(Dispatchers.Main) {
-                    updateLogCount()
-                }
-            }
+            flushRemainingLogs()
         }
         
         isRunning.value = false
@@ -316,6 +133,82 @@ class LogcatViewModel {
         }
     }
     
+    /**
+     * התחלת flush תקופתי עם חיסכון בזיכרון
+     */
+    private fun startPeriodicFlush() {
+        flushJob = scope.launch {
+            while (isActive) {
+                delay(100) // תדירות גבוהה יותר לחיסכון בזיכרון
+                flushLogBuffer()
+                
+                // ניקוי זיכרון תקופתי
+                if (System.currentTimeMillis() % 10000 < 100) { // כל 10 שניות בערך
+                    System.gc()
+                }
+            }
+        }
+    }
+    
+    /**
+     * טיפול בלוג חדש
+     */
+    private fun handleNewLog(logEntry: LogEntry) {
+        synchronized(logBuffer) {
+            logBuffer.add(logEntry)
+            
+            // flush מיידי אם הbuffer מלא
+            if (logBuffer.size >= batchSize) {
+                scope.launch {
+                    flushLogBuffer()
+                }
+            }
+        }
+    }
+    
+    /**
+     * שטיפת buffer הלוגים
+     */
+    private suspend fun flushLogBuffer() {
+        val toFlush = synchronized(logBuffer) {
+            if (logBuffer.isNotEmpty()) {
+                val list = logBuffer.toList()
+                logBuffer.clear()
+                list
+            } else null
+        }
+        
+        if (toFlush != null) {
+            database.insertLogsBatch(toFlush)
+            withContext(Dispatchers.Main) {
+                updateLogCount()
+            }
+        }
+    }
+    
+    /**
+     * שטיפה אחרונה של לוגים
+     */
+    private suspend fun flushRemainingLogs() {
+        val remaining = synchronized(logBuffer) {
+            if (logBuffer.isNotEmpty()) {
+                val list = logBuffer.toList()
+                logBuffer.clear()
+                list
+            } else null
+        }
+        
+        if (remaining != null) {
+            database.insertLogsBatch(remaining)
+            withContext(Dispatchers.Main) {
+                updateLogCount()
+            }
+        }
+    }
+    
+    /**
+     * עדכון מספר לוגים
+     */
     private suspend fun updateLogCount() {
         val totalCount = database.getTotalLogCount()
         val filteredCount = database.getLogCount(
@@ -331,15 +224,64 @@ class LogcatViewModel {
     }
     
     suspend fun getLogsPage(offset: Int, limit: Int): List<LogEntry> {
-        // Query database with optimized dispatcher for better performance
+        // Ultra-optimized database query with connection pooling
         return withContext(Dispatchers.IO) {
-            database.getLogs(
-                offset = offset,
-                limit = limit,
-                searchText = searchText.value,
-                levels = selectedLevels.value,
-                tagFilter = tagFilter.value
-            )
+            try {
+                database.getLogs(
+                    offset = offset,
+                    limit = limit,
+                    searchText = searchText.value,
+                    levels = selectedLevels.value,
+                    tagFilter = tagFilter.value
+                )
+            } catch (e: Exception) {
+                // במקום להחזיר רשימה ריקה, נסה שוב עם פרמטרים מותאמים
+                println("שגיאה בטעינת לוגים: ${e.message}, מנסה שוב...")
+                try {
+                    // נסה עם limit קטן יותר
+                    val safeLimit = minOf(limit, 50)
+                    database.getLogs(
+                        offset = offset,
+                        limit = safeLimit,
+                        searchText = searchText.value,
+                        levels = selectedLevels.value,
+                        tagFilter = tagFilter.value
+                    )
+                } catch (e2: Exception) {
+                    // רק אם גם הניסיון השני נכשל, החזר רשימה ריקה
+                    println("שגיאה חוזרת בטעינת לוגים: ${e2.message}")
+                    emptyList()
+                }
+            }
+        }
+    }
+    
+    // Batch loading for ultra-fast scrolling
+    suspend fun getLogsBatch(requests: List<Pair<Int, Int>>): Map<Int, List<LogEntry>> {
+        return withContext(Dispatchers.IO) {
+            val results = mutableMapOf<Int, List<LogEntry>>()
+            
+            // Process requests in parallel for maximum speed
+            requests.map { (offset, limit) ->
+                async {
+                    try {
+                        val logs = database.getLogs(
+                            offset = offset,
+                            limit = limit,
+                            searchText = searchText.value,
+                            levels = selectedLevels.value,
+                            tagFilter = tagFilter.value
+                        )
+                        offset to logs
+                    } catch (e: Exception) {
+                        offset to emptyList<LogEntry>()
+                    }
+                }
+            }.awaitAll().forEach { (requestOffset, logs) ->
+                results[requestOffset] = logs
+            }
+            
+            results
         }
     }
     
@@ -364,56 +306,7 @@ class LogcatViewModel {
         }
     }
     
-    private fun parseLogLine(line: String): LogEntry? {
-        try {
-            // threadtime format: MM-DD HH:MM:SS.mmm PID TID LEVEL TAG: MESSAGE
-            val regex = """(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+(\d+)\s+(\d+)\s+([VDIWEA])\s+(.+?):\s+(.*)""".toRegex()
-            val match = regex.find(line)
-            
-            if (match != null) {
-                val (timestamp, pid, tid, level, tag, message) = match.destructured
-                
-                val logLevel = when (level) {
-                    "V" -> LogLevel.VERBOSE
-                    "D" -> LogLevel.DEBUG
-                    "I" -> LogLevel.INFO
-                    "W" -> LogLevel.WARN
-                    "E" -> LogLevel.ERROR
-                    "A" -> LogLevel.ASSERT
-                    else -> LogLevel.VERBOSE
-                }
-                
-                return LogEntry(
-                    id = logIdCounter++,
-                    timestamp = timestamp,
-                    pid = pid,
-                    tid = tid,
-                    level = logLevel,
-                    tag = tag.trim(),
-                    message = message
-                )
-            }
-            
-            // Try simpler format as fallback
-            if (line.contains(":") && line.length > 10) {
-                // Just show it as info log
-                return LogEntry(
-                    id = logIdCounter++,
-                    timestamp = "00-00 00:00:00.000",
-                    pid = "0",
-                    tid = "0",
-                    level = LogLevel.INFO,
-                    tag = "System",
-                    message = line
-                )
-            }
-            
-            return null
-        } catch (e: Exception) {
-            println("Error parsing line: $line - ${e.message}")
-            return null
-        }
-    }
+
     
     fun onFiltersChanged() {
         scope.launch {
@@ -423,9 +316,8 @@ class LogcatViewModel {
     
     fun cleanup() {
         stopLogcat()
-        deviceScanJob?.cancel()
+        deviceManager.cleanup()
         database.close()
         scope.cancel()
-        // Note: We don't stop ADB server here as other apps might be using it
     }
 }

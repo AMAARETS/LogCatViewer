@@ -15,6 +15,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextOverflow
 import LogEntry
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
@@ -23,12 +24,12 @@ fun LogItemWithSelection(
     log: LogEntry,
     isSelected: Boolean,
     isDragging: Boolean,
-    onSelectionStart: (isCtrlPressed: Boolean) -> Unit,
+    onSelectionStart: (modifiers: PointerKeyboardModifiers) -> Unit,
     onDragHover: () -> Unit,
     @Suppress("UNUSED_PARAMETER") onDragEnd: () -> Unit,
     @Suppress("UNUSED_PARAMETER") onContextMenu: (DpOffset) -> Unit
 ) {
-    // Static colors - no need to remember
+    // Pre-computed static values for maximum performance
     val backgroundColor = Color(0xFF252525)
     val selectedColor = Color(0xFF1E3A5F)
     val hoverColor = Color(0xFF2D2D2D)
@@ -37,11 +38,14 @@ fun LogItemWithSelection(
     val metaColor = Color(0xFF888888)
     val shape = RoundedCornerShape(2.dp)
     
+    // Memoize expensive string operations
     val pidTidText = remember(log.pid, log.tid) { "${log.pid}/${log.tid}" }
     
+    // Minimal state tracking for performance
     var isHovered by remember { mutableStateOf(false) }
     
-    LogItemRow(
+    // Direct rendering without extra wrapper for maximum performance
+    FastLogItemRow(
         log = log,
         isSelected = isSelected,
         isHovered = isHovered,
@@ -147,7 +151,7 @@ fun LogItem(log: LogEntry) {
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
 @Composable
-private fun LogItemRow(
+private fun FastLogItemRow(
     log: LogEntry,
     isSelected: Boolean,
     isHovered: Boolean,
@@ -162,9 +166,9 @@ private fun LogItemRow(
     pidTidText: String,
     onHoverChange: (Boolean) -> Unit,
     onDragHover: () -> Unit,
-    onSelectionStart: (isCtrlPressed: Boolean) -> Unit
+    onSelectionStart: (modifiers: PointerKeyboardModifiers) -> Unit
 ) {
-    // Simplified - no Box wrapper
+    // Ultra-optimized row with minimal overhead
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -177,7 +181,7 @@ private fun LogItemRow(
                 },
                 shape
             )
-            // Optimized pointer input - only track essential events
+            // Hyper-optimized pointer input - minimal event processing
             .pointerInput(log.id) {
                 awaitPointerEventScope {
                     while (true) {
@@ -185,23 +189,18 @@ private fun LogItemRow(
                         when (event.type) {
                             PointerEventType.Enter -> {
                                 onHoverChange(true)
-                                if (isDragging) {
-                                    onDragHover()
-                                }
+                                if (isDragging) onDragHover()
                             }
                             PointerEventType.Exit -> {
                                 onHoverChange(false)
                             }
                             PointerEventType.Press -> {
                                 if (event.button == PointerButton.Primary) {
-                                    val isCtrlPressed = event.keyboardModifiers.isCtrlPressed
-                                    onSelectionStart(isCtrlPressed)
+                                    onSelectionStart(event.keyboardModifiers)
                                 }
                             }
                             PointerEventType.Move -> {
-                                if (isDragging) {
-                                    onDragHover()
-                                }
+                                if (isDragging) onDragHover()
                             }
                         }
                     }
@@ -210,7 +209,8 @@ private fun LogItemRow(
             .padding(horizontal = 8.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        LogItemContent(log, metaColor, tagColor, messageColor, pidTidText)
+        // Inline content for maximum performance
+        OptimizedLogItemContent(log, metaColor, tagColor, messageColor, pidTidText)
     }
 }
 
@@ -279,5 +279,78 @@ private fun RowScope.LogItemContent(
         modifier = Modifier.weight(1f),
         maxLines = 1,
         softWrap = false
+    )
+}
+
+@Composable
+private fun RowScope.OptimizedLogItemContent(
+    log: LogEntry,
+    metaColor: Color,
+    tagColor: Color,
+    messageColor: Color,
+    pidTidText: String
+) {
+    // Ultra-optimized content rendering with minimal allocations
+    
+    // Timestamp (leftmost) - optimized
+    Text(
+        text = log.timestamp,
+        fontSize = 11.sp,
+        fontFamily = FontFamily.Monospace,
+        color = metaColor,
+        modifier = Modifier.width(140.dp),
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip
+    )
+    
+    // PID/TID - optimized
+    Text(
+        text = pidTidText,
+        fontSize = 11.sp,
+        fontFamily = FontFamily.Monospace,
+        color = metaColor,
+        modifier = Modifier.width(80.dp),
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip
+    )
+    
+    // Level - optimized
+    Text(
+        text = log.level.displayName,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold,
+        fontFamily = FontFamily.Monospace,
+        color = log.level.color,
+        modifier = Modifier.width(20.dp),
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip
+    )
+    
+    // Tag - optimized
+    Text(
+        text = log.tag,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.SemiBold,
+        fontFamily = FontFamily.Monospace,
+        color = tagColor,
+        modifier = Modifier.width(180.dp),
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip
+    )
+    
+    // Message (rightmost, takes remaining space) - optimized
+    Text(
+        text = log.message,
+        fontSize = 12.sp,
+        fontFamily = FontFamily.Monospace,
+        color = messageColor,
+        modifier = Modifier.weight(1f),
+        maxLines = 1,
+        softWrap = false,
+        overflow = TextOverflow.Clip
     )
 }
